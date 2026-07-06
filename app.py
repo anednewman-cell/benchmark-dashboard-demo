@@ -836,8 +836,8 @@ def filter_jobs(df, filters, min_jobs, is_master=True, sample_squares=0.0, exclu
 st.sidebar.title("Configuration")
 
 source_sheet = "TPO-PVC"
-sample_squares = st.sidebar.number_input("Sample Squares", value=float(DEFAULT_SAMPLE_SQUARES), step=10.0, format="%.2f")
-labor_rate = st.sidebar.number_input("Labor Rate", value=430.00, step=25.0, format="%.2f")
+sample_squares = st.sidebar.number_input("Target Project Size (Squares)", value=float(DEFAULT_SAMPLE_SQUARES), step=10.0, format="%.2f")
+labor_rate = st.sidebar.number_input("Man Day Labor Rate", value=430.00, step=25.0, format="%.2f")
 min_jobs = st.sidebar.number_input("Min Comparable Jobs", value=5, step=1)
 
 st.sidebar.markdown("### Filters")
@@ -1191,14 +1191,14 @@ if tier_used == "Tier 4 (Global Fallback)":
 col1, col2, col3 = st.columns(3)
 col1.metric("Comparable Jobs Found", len(matched_jobs))
 col2.metric("Match Level", tier_used)
-col3.metric("Sample Squares", f"{sample_squares:,.2f}")
+col3.metric("Target Roof Size", f"{sample_squares:,.2f}")
 
 st.markdown("---")
 st.header("Top Estimate Summary")
 
 if tier_used != "Tier 4 (Global Fallback)":
     t1, t2, t3, t4, t5 = st.columns(5)
-    t1.metric("Clean Total Cost", f"${est_total_cost:,.2f}")
+    t1.metric("Clean Total Cost", f"${est_total_cost:,.2f}")\n    t1.caption("*(Baseline: Excludes Scaffolding, Deck Replacement, and Special Items)*")
     t2.metric("Sell @ 30% Margin", f"${sell_30:,.2f}")
     t3.metric("Sell @ 40% Margin", f"${sell_40:,.2f}")
     t4.metric("Estimated MD", f"{est_md:,.2f}")
@@ -2086,3 +2086,6 @@ if st.button("Download Recap Excel"):
     excel_data = to_excel()
     st.download_button(label="Click here to download", data=excel_data, file_name="Estimated_Recap.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+
+st.markdown("---")
+st.info("**Note:** This tool provides a historical baseline based on past performance. It is a sanity-check mechanism and does not account for unique site conditions, extreme chop/complexity, or current supply chain volatility.")
