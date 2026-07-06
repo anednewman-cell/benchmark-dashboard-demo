@@ -1198,7 +1198,8 @@ st.header("Top Estimate Summary")
 
 if tier_used != "Tier 4 (Global Fallback)":
     t1, t2, t3, t4, t5 = st.columns(5)
-    t1.metric("Clean Total Cost", f"${est_total_cost:,.2f}")\n    t1.caption("*(Baseline: Excludes Scaffolding, Deck Replacement, and Special Items)*")
+    t1.metric("Clean Total Cost", f"${est_total_cost:,.2f}")
+    t1.caption("*(Baseline: Excludes Scaffolding, Deck Replacement, and Special Items)*")
     t2.metric("Sell @ 30% Margin", f"${sell_30:,.2f}")
     t3.metric("Sell @ 40% Margin", f"${sell_40:,.2f}")
     t4.metric("Estimated MD", f"{est_md:,.2f}")
