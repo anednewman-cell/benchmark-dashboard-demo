@@ -16,6 +16,34 @@ DEFAULT_SAMPLE_SQUARES = 500
 
 st.set_page_config(page_title="Historical Estimating Benchmark", layout="wide")
 
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        if st.session_state["password"] == "Roofing2026!":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.markdown("<h2 style='text-align: center; margin-top: 100px;'>Demo Dashboard Login</h2>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            st.text_input("Please enter the password to access the demo:", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.markdown("<h2 style='text-align: center; margin-top: 100px;'>Demo Dashboard Login</h2>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            st.text_input("Please enter the password to access the demo:", type="password", on_change=password_entered, key="password")
+            st.error("😕 Password incorrect")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()
+
 # Inject CSS for printer optimization
 st.markdown("""
 <style>
