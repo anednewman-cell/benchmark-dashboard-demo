@@ -175,9 +175,9 @@ SOURCE_DIR = PROJECT_ROOT / "data" / "source"
 DASHBOARD_DATA_DIR = PROJECT_ROOT / "data" / "dashboard"
 NEW_SOURCE_DIR = PROJECT_ROOT / "new source"
 
-OFFICIAL_FILE = str(NEW_SOURCE_DIR / "Master List NEW.xlsx")
+OFFICIAL_FILE = str(PROJECT_ROOT / "data" / "Demo_Master_List.xlsx")
 DATA_DIR = str(DASHBOARD_DATA_DIR)
-LOCAL_FILE = str(DASHBOARD_DATA_DIR / "Master_List_NEW_DASHBOARD_COPY.xlsx")
+LOCAL_FILE = OFFICIAL_FILE
 
 # Ensure directories exist
 SOURCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -196,51 +196,7 @@ def make_google_maps_link(address, city):
 st.markdown("<h1 class='screen-only' style='margin-bottom: 0px;'>Historical Estimating Benchmark Dashboard</h1>", unsafe_allow_html=True)
 sticky_header_placeholder = st.empty()
 
-if os.path.exists(LOCAL_FILE):
-    mtime = os.path.getmtime(LOCAL_FILE)
-    dt = datetime.datetime.fromtimestamp(mtime)
-    last_updated_str = dt.strftime("%Y-%m-%d %I:%M %p")
-    info_text = f"<strong>Dashboard Data Last Updated:</strong> {last_updated_str}<br><br>Dashboard results are based on the local dashboard copy. Click <strong>Update Dashboard Data</strong> after saving changes to the master workbook.<br><br><strong>Source of Truth:</strong> <code>{OFFICIAL_FILE}</code>"
-else:
-    info_text = f"Dashboard results are based on the local dashboard copy. Click <strong>Update Dashboard Data</strong> after saving changes to the master workbook.<br><br><strong>Source of Truth:</strong> <code>{OFFICIAL_FILE}</code>"
 
-st.markdown(f"""
-<div class="screen-only" style="
-    background-color: #e0f2fe; 
-    color: #0369a1; 
-    padding: 16px; 
-    border-radius: 8px; 
-    border-left: 6px solid #0284c7;
-    margin-bottom: 20px;
-    font-family: sans-serif;
-    font-size: 14px;
-">
-    {info_text}
-</div>
-""", unsafe_allow_html=True)
-
-
-col1, col2 = st.columns([1, 1])
-with col1:
-    if st.button("Update Dashboard Data", type="primary"):
-        if not os.path.exists(DATA_DIR):
-            os.makedirs(DATA_DIR, exist_ok=True)
-        try:
-            shutil.copy2(OFFICIAL_FILE, LOCAL_FILE)
-            st.success("✅ Dashboard data successfully updated from the master Excel file!")
-            st.cache_data.clear()
-        except PermissionError:
-            st.error("❌ Could not update dashboard data because the source workbook is locked. Close Excel and try again.")
-        except Exception as e:
-            st.error(f"❌ Error copying file: {e}")
-
-with col2:
-    if st.button("📂 Open Source of Truth Workbook"):
-        try:
-            os.startfile(OFFICIAL_FILE)
-            st.success("Opening workbook in Excel...")
-        except Exception as e:
-            st.error(f"Could not open file: {e}")
 
 # Column name mapping: new spreadsheet column -> old internal column name
 # This allows all downstream code to continue using the old internal names
@@ -672,6 +628,31 @@ if not df_disposal.empty:
     df_disposal["Total Tons"] = (df_disposal["T/O Weight psf"] * df_disposal["Total Squares"] * 100) / 2000
     df_disposal["Disposal Cost/Ton"] = df_disposal.apply(lambda x: x["Disposal"] / x["Total Tons"] if x["Total Tons"] > 0 else np.nan, axis=1)
 
+# Fuel Data (Uses Master List)
+fuel_mask = (pd.to_numeric(df_master_eligible["Fuel"], errors='coerce').fillna(0) > 0) & (pd.to_numeric(df_master_eligible["Estimator MD"], errors='coerce').fillna(0) > 0) & (~df_master_eligible["Job#"].astype(str).str.lower().isin(["median", "sample"]))
+df_fuel = df_master_eligible[fuel_mask].copy()
+if not df_fuel.empty:
+    df_fuel["Fuel Cost/MD"] = df_fuel["Fuel"] / df_fuel["Estimator MD"]
+    df_fuel["City"] = df_fuel["City"].astype(str).str.strip().str.title()
+    
+    zone_1 = ["Hayward", "Newark", "Fremont", "San Leandro", "Union City", "San Lorenzo", "Castro Valley"]
+    zone_2 = ["Redwood City", "San Mateo", "Palo Alto", "Menlo Park", "Foster City", "Brisbane", "South San Francisco", "Burlingame", "Belmont", "San Carlos"]
+    zone_3 = ["San Jose", "Santa Clara", "Sunnyvale", "Milpitas", "Mountain View", "Cupertino", "Los Gatos", "Campbell"]
+    zone_4 = ["Concord", "Walnut Creek", "Vallejo", "Pleasant Hill", "Martinez", "Pittsburg", "Antioch", "Dublin", "Pleasanton", "Livermore", "San Ramon"]
+    zone_5 = ["Oakland", "Berkeley", "Alameda", "Emeryville", "Richmond", "San Pablo"]
+    zone_6 = ["San Francisco"]
+
+    def get_zone(city):
+        if city in zone_1: return "Zone 1 (Local East Bay)"
+        if city in zone_2: return "Zone 2 (Peninsula / Bridges)"
+        if city in zone_3: return "Zone 3 (South Bay)"
+        if city in zone_4: return "Zone 4 (Far East / North)"
+        if city in zone_5: return "Zone 5 (Oakland / Berkeley)"
+        if city in zone_6: return "Zone 6 (San Francisco)"
+        return "Unzoned"
+
+    df_fuel["Zone"] = df_fuel["City"].apply(get_zone)
+
 # Helpers
 def get_filter_options(df, col):
     if col not in df.columns:
@@ -822,11 +803,13 @@ def filter_jobs(df, filters, min_jobs, is_master=True, sample_squares=0.0, exclu
         return jobs, "Tier 4 (Global Fallback)", tier_counts, tier_jobs_dict, 4
 
 # Sidebar UI
+
+
 st.sidebar.title("Configuration")
 
-source_sheet = st.sidebar.selectbox("Source Sheet", ["TPO-PVC", "Coating Projects"])
-sample_squares = st.sidebar.number_input("Sample Squares", value=float(DEFAULT_SAMPLE_SQUARES), step=10.0, format="%.2f")
-labor_rate = st.sidebar.number_input("Labor Rate", value=430.00, step=25.0, format="%.2f")
+source_sheet = "TPO-PVC"
+sample_squares = st.sidebar.number_input("Target Project Size (Squares)", value=float(DEFAULT_SAMPLE_SQUARES), step=10.0, format="%.2f")
+labor_rate = st.sidebar.number_input("Man Day Labor Rate", value=430.00, step=25.0, format="%.2f")
 min_jobs = st.sidebar.number_input("Min Comparable Jobs", value=5, step=1)
 
 st.sidebar.markdown("### Filters")
@@ -1180,7 +1163,7 @@ if tier_used == "Tier 4 (Global Fallback)":
 col1, col2, col3 = st.columns(3)
 col1.metric("Comparable Jobs Found", len(matched_jobs))
 col2.metric("Match Level", tier_used)
-col3.metric("Sample Squares", f"{sample_squares:,.2f}")
+col3.metric("Target Roof Size", f"{sample_squares:,.2f}")
 
 st.markdown("---")
 st.header("Top Estimate Summary")
@@ -1188,6 +1171,7 @@ st.header("Top Estimate Summary")
 if tier_used != "Tier 4 (Global Fallback)":
     t1, t2, t3, t4, t5 = st.columns(5)
     t1.metric("Clean Total Cost", f"${est_total_cost:,.2f}")
+    t1.caption("*(Baseline: Excludes Scaffolding, Deck Replacement, and Special Items)*")
     t2.metric("Sell @ 30% Margin", f"${sell_30:,.2f}")
     t3.metric("Sell @ 40% Margin", f"${sell_40:,.2f}")
     t4.metric("Estimated MD", f"{est_md:,.2f}")
@@ -1294,7 +1278,7 @@ st.markdown("---")
 st.header("Allowance Estimators")
 st.markdown("*These are independent budgeting tools and do not affect Clean Benchmark Direct Cost.*")
 
-col_perm, col_disp = st.columns(2)
+col_perm, col_disp, col_fuel = st.columns(3)
 
 # PERMIT ESTIMATOR
 permit_export_data = {}
@@ -1480,6 +1464,80 @@ with col_disp:
             st.warning("No valid disposal data found in historical dataset.")
             disposal_export_data = {"Active": False, "Msg": "No valid data"}
 
+# FUEL ESTIMATOR
+fuel_export_data = {}
+with col_fuel:
+    st.markdown("#### Fuel Cost Estimator")
+    if not df_fuel.empty:
+        fuel_cities = ["All Cities"] + sorted([c for c in df_fuel["City"].dropna().unique() if str(c).strip() != ""])
+        fuel_counts = df_fuel["City"].dropna().astype(str).str.strip().value_counts().to_dict()
+        total_fuel_count = len(df_fuel)
+        
+        def format_fuel_city(city_opt):
+            if city_opt == "All Cities":
+                return f"All Cities ({total_fuel_count})"
+            count = fuel_counts.get(city_opt, 0)
+            return f"{city_opt} ({count})"
+            
+        f_city = st.selectbox("Fuel City", fuel_cities, key="fuel_city", format_func=format_fuel_city)
+        
+        fdf = df_fuel if f_city == "All Cities" else df_fuel[df_fuel["City"].astype(str).str.strip() == f_city]
+        f_count = len(fdf)
+        
+        if f_count >= 3:
+            f_low = np.percentile(fdf["Fuel Cost/MD"], 25)
+            f_med = np.median(fdf["Fuel Cost/MD"])
+            f_high = np.percentile(fdf["Fuel Cost/MD"], 75)
+            
+            st.metric("Estimated Fuel Cost", f"${f_med * est_md:,.2f}")
+            st.markdown(f"**Fuel \\$/MD:** \${f_med:,.2f}/MD")
+            st.markdown(f"**Low / High Range:** \${f_low * est_md:,.2f} - \${f_high * est_md:,.2f}")
+            st.markdown(f"**Estimated Man Days:** {est_md:,.2f} MD")
+            st.markdown(f"**Data Points Used:** {f_count}")
+            
+            fuel_export_data = {
+                "Active": True,
+                "City": f_city,
+                "Count": f_count,
+                "Median $/MD": f_med,
+                "Low": f_low * est_md,
+                "Median": f_med * est_md,
+                "High": f_high * est_md,
+                "Msg": ""
+            }
+            
+            if f_city != "All Cities":
+                city_zone = get_zone(f_city)
+                if city_zone != "Unzoned":
+                    zone_df = df_fuel[df_fuel["Zone"] == city_zone]
+                    if len(zone_df) >= 3:
+                        z_med = np.median(zone_df["Fuel Cost/MD"])
+                        st.markdown(f"*Secondary Metric: {f_city} is in **{city_zone}**. The historical median for this zone is **\${z_med:,.2f}/MD**.*")
+                        fuel_export_data["Zone"] = city_zone
+                        fuel_export_data["Zone_Med"] = z_med
+        else:
+            st.error("Insufficient fuel data for this city.")
+            st.markdown(f"**Data Points Found:** {f_count} (Minimum Required: 3)")
+            fuel_export_data = {"Active": False, "City": f_city, "Count": f_count, "Msg": "Insufficient data"}
+            
+            if f_city != "All Cities":
+                city_zone = get_zone(f_city)
+                if city_zone != "Unzoned":
+                    zone_df = df_fuel[df_fuel["Zone"] == city_zone]
+                    if len(zone_df) >= 3:
+                        z_med = np.median(zone_df["Fuel Cost/MD"])
+                        st.markdown(f"*Zone Reference: {f_city} is in **{city_zone}**. The historical median for this zone is **\${z_med:,.2f}/MD** (\${z_med * est_md:,.2f}).*")
+                        fuel_export_data["Zone"] = city_zone
+                        fuel_export_data["Zone_Med"] = z_med
+                elif len(df_fuel) >= 3:
+                    f_med_all = np.median(df_fuel["Fuel Cost/MD"])
+                    st.markdown(f"*All Cities Reference: \${f_med_all * est_md:,.2f}*")
+                
+        st.info("Fuel estimate is based on historical fuel cost per Man Day. Fuel costs fluctuate significantly with macroeconomic gas prices and distance to the job site.")
+    else:
+        st.warning("No valid fuel data found in historical dataset.")
+        fuel_export_data = {"Active": False, "Msg": "No valid data"}
+
 # Quick Reference Estimate
 if tier_used != "Tier 4 (Global Fallback)":
     st.markdown('<div class="print-page-break"></div>', unsafe_allow_html=True)
@@ -1660,7 +1718,7 @@ else:
             st.markdown(sqmd_bar_html, unsafe_allow_html=True)
             
         st.caption("*Historical roof-system productivity metrics (Squares per Man Day).*")
-
+        
     with tab_proj:
         if tier_used == "Tier 4 (Global Fallback)":
             st.error("Broad reference only — not reliable for estimating.")
@@ -2038,10 +2096,7 @@ def to_excel():
         df_export_jobs.to_excel(writer, sheet_name="Comparable Jobs", index=False)
         ws_recap = writer.sheets["Recap"]
         ws_recap.append([])
-        
-        # Allowance Estimator Recaps
-        ws_recap.append(["--- ALLOWANCE ESTIMATORS ---"])
-        ws_recap.append(["Note: Permit and Disposal estimators are independent allowance tools and do not affect Clean Benchmark Direct Cost."])
+        ws_recap.append(["Note: Permit, Disposal, and Fuel estimators are independent allowance tools and do not affect Clean Benchmark Direct Cost."])
         
         ws_recap.append([])
         ws_recap.append(["Permit Cost Estimator"])
@@ -2075,6 +2130,25 @@ def to_excel():
             ws_recap.append(["Status", disposal_export_data.get("Msg", "Inactive")])
             
         ws_recap.append([])
+        ws_recap.append(["Fuel Cost Estimator"])
+        if fuel_export_data.get("Active"):
+            ws_recap.append(["City Filter", fuel_export_data["City"]])
+            ws_recap.append(["Data Points Used", fuel_export_data["Count"]])
+            ws_recap.append(["Median Fuel $/MD", f"${fuel_export_data['Median $/MD']:,.2f}"])
+            ws_recap.append(["Low Fuel Estimate", f"${fuel_export_data['Low']:,.2f}"])
+            ws_recap.append(["Median Fuel Estimate", f"${fuel_export_data['Median']:,.2f}"])
+            ws_recap.append(["High Fuel Estimate", f"${fuel_export_data['High']:,.2f}"])
+            if "Zone" in fuel_export_data:
+                ws_recap.append(["Secondary Zone Reference", fuel_export_data["Zone"]])
+                ws_recap.append(["Zone Median $/MD", f"${fuel_export_data['Zone_Med']:,.2f}"])
+        else:
+            ws_recap.append(["Status", fuel_export_data.get("Msg", "Inactive")])
+            if "Zone" in fuel_export_data:
+                ws_recap.append(["Zone Fallback Used", fuel_export_data["Zone"]])
+                ws_recap.append(["Zone Median $/MD", f"${fuel_export_data['Zone_Med']:,.2f}"])
+
+        for _ in range(3):
+            ws_recap.append([])
         ws_recap.append(["--- ESTIMATING MODEL ---"])
         ws_recap.append(["Estimating Model Output Generated by Historical Benchmark Tool"])
         ws_recap.append(["Note: Clean benchmark excludes Scaffold and 03-0120 Special (Skylights/Hatches)."])
@@ -2084,574 +2158,6 @@ if st.button("Download Recap Excel"):
     excel_data = to_excel()
     st.download_button(label="Click here to download", data=excel_data, file_name="Estimated_Recap.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.markdown('<div id="audit-tools-start"></div>', unsafe_allow_html=True)
-st.header("Data Quality / Audit Tools")
-
-def clean_str(val):
-    if isinstance(val, list):
-        valid_vals = [str(v).strip() for v in val if str(v).strip().lower() not in ["all", "[blank]", "n/a", "nan", ""]]
-        return "/".join(valid_vals)
-    if pd.isna(val):
-        return ""
-    return str(val).strip()
-
-def weighted_average(values, weights):
-    valid = [(float(v), float(w)) for v, w in zip(values, weights) if w > 0.0]
-    if not valid:
-        return 0.0
-    sum_w = sum(w for v, w in valid)
-    if sum_w <= 0:
-        return 0.0
-    return sum(v * w for v, w in valid) / sum_w
-
-def weighted_median(values, weights):
-    valid = [(float(v), float(w)) for v, w in zip(values, weights) if w > 0.0]
-    if not valid:
-        return 0.0
-    valid.sort(key=lambda x: x[0])
-    sorted_vals = [x[0] for x in valid]
-    sorted_weights = [x[1] for x in valid]
-    total_w = sum(sorted_weights)
-    midpoint = total_w / 2.0
-    cum_w = 0.0
-    for v, w in zip(sorted_vals, sorted_weights):
-        cum_w += w
-        if cum_w >= midpoint:
-            return v
-    return sorted_vals[-1]
-
-def trimmed_weighted_average(values, weights, trim_percent=0.10):
-    valid = [(float(v), float(w), idx) for idx, (v, w) in enumerate(zip(values, weights)) if w > 0.0]
-    if not valid:
-        return 0.0, set()
-    if len(valid) < 3:
-        raise ValueError("Too few weighted comparable jobs for trimming (minimum 3 required).")
-    
-    valid.sort(key=lambda x: x[0])
-    
-    total_w = sum(x[1] for x in valid)
-    trim_w = total_w * trim_percent
-    
-    weights_to_trim = [x[1] for x in valid]
-    
-    # Trim left (lower tail)
-    left_trimmed = 0.0
-    for i in range(len(weights_to_trim)):
-        needed = trim_w - left_trimmed
-        if needed <= 0:
-            break
-        if weights_to_trim[i] <= needed:
-            left_trimmed += weights_to_trim[i]
-            weights_to_trim[i] = 0.0
-        else:
-            weights_to_trim[i] -= needed
-            left_trimmed += needed
-            
-    # Trim right (upper tail)
-    right_trimmed = 0.0
-    for i in range(len(weights_to_trim) - 1, -1, -1):
-        needed = trim_w - right_trimmed
-        if needed <= 0:
-            break
-        if weights_to_trim[i] <= needed:
-            right_trimmed += weights_to_trim[i]
-            weights_to_trim[i] = 0.0
-        else:
-            weights_to_trim[i] -= needed
-            right_trimmed += needed
-            
-    sum_w = sum(weights_to_trim)
-    if sum_w <= 0:
-        raise ValueError("Trimming removed all weights.")
-        
-    weighted_sum = sum(valid[i][0] * weights_to_trim[i] for i in range(len(valid)))
-    val_avg = weighted_sum / sum_w
-    
-    included_original_indices = set()
-    for i in range(len(valid)):
-        if weights_to_trim[i] > 0.0:
-            included_original_indices.add(valid[i][2])
-            
-    return val_avg, included_original_indices
-
-# Comparable Assembly Preview Option
-show_preview = st.checkbox("Show Comparable Assembly Preview")
-if show_preview:
-    st.warning("⚠️ **Comparable Assembly Preview is for estimator review only. These values are not currently affecting benchmark calculations.**")
-    
-    rules = comparable_assembly_logic.load_rules()
-    preview_data = []
-    total_reviewed = 0
-    stats_counts = {"High": 0, "Medium": 0, "Low": 0, "None": 0}
-        
-    for idx, row in df_active.iterrows():
-        job_no = clean_str(row.get("Job#"))
-        address = clean_str(row.get("Address"))
-        row_city = clean_str(row.get("City"))
-        row_spec_type = clean_str(row.get("Spec Type"))
-        
-        # Check if we are on Master Projects List sheet
-        if "Roof Material Type" in df_active.columns:
-            row_mat_type = clean_str(row.get("Roof Material Type"))
-            board_type = clean_str(row.get("Cover Board Type"))
-            mat_att = clean_str(row.get("Roof Material Attachment"))
-            board_att = clean_str(row.get("Cover Board Attachment"))
-            notes = clean_str(row.get("Special Notes"))
-            
-            parts = []
-            if row_mat_type and row_mat_type.lower() != "nan":
-                parts.append(row_mat_type)
-            if board_type and board_type.lower() != "nan":
-                parts.append(f"over {board_type}")
-                if board_att and board_att.lower() != "nan":
-                    parts.append(f"({board_att})")
-            if mat_att and mat_att.lower() != "nan":
-                parts.append(f"attached {mat_att}")
-            if notes and notes.lower() != "nan":
-                parts.append(f"[{notes}]")
-            combined_text = " ".join(parts)
-        else:
-            coating_spec = clean_str(row.get("Coating Spec"))
-            notes = clean_str(row.get("Notes"))
-            steps = [clean_str(row.get(f"Step {i}")) for i in range(1, 7)]
-            steps_nonempty = [s for s in steps if s]
-            
-            parts = []
-            if coating_spec and coating_spec.lower() != "nan":
-                parts.append(coating_spec)
-            for s in steps_nonempty:
-                parts.append(s)
-            if notes and notes.lower() != "nan":
-                parts.append(f"[{notes}]")
-            combined_text = ", ".join(parts)
-            
-        dims = comparable_assembly_logic.extract_assembly_dimensions(combined_text, rules)
-        
-        dims_found = sum([
-            1 if dims["membrane"]["detected"] else 0,
-            1 if dims["board"]["detected"] else 0,
-            1 if dims["attachment"]["detected"] else 0
-        ])
-        
-        if dims_found == 3: score = "High"
-        elif dims_found == 2: score = "Medium"
-        elif dims_found == 1: score = "Low"
-        else: score = "None"
-        
-        total_reviewed += 1
-        stats_counts[score] += 1
-        
-        preview_data.append({
-            "Project Name / Address": address,
-            "City": row_city,
-            "Spec Type": row_spec_type,
-            "Roof Material Type": row.get("Roof Material Type", "") if "Roof Material Type" in df_active.columns else "",
-            "Cover Board Type": row.get("Cover Board Type", "") if "Cover Board Type" in df_active.columns else "",
-            "Roof Material Attachment": row.get("Roof Material Attachment", "") if "Roof Material Attachment" in df_active.columns else "",
-            "Cover Board Attachment": row.get("Cover Board Attachment", "") if "Cover Board Attachment" in df_active.columns else "",
-            "Combined Assembly Text": combined_text,
-            "Detected Membrane Group": dims["membrane"]["group_name"] or "None",
-            "Detected Membrane Terms": ", ".join(dims["membrane"]["matched_terms"]),
-            "Detected Board / Insulation Group": dims["board"]["group_name"] or "None",
-            "Detected Board / Insulation Terms": ", ".join(dims["board"]["matched_terms"]),
-            "Detected Attachment Group": dims["attachment"]["group_name"] or "None",
-            "Detected Attachment Terms": ", ".join(dims["attachment"]["matched_terms"]),
-            "Detection Completeness Score": score
-        })
-        
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total Rows Reviewed", total_reviewed)
-    col2.metric("High Completeness", stats_counts["High"])
-    col3.metric("Medium Completeness", stats_counts["Medium"])
-    col4.metric("Low Completeness", stats_counts["Low"])
-    col5.metric("None Count", stats_counts["None"])
-    
-    st.dataframe(pd.DataFrame(preview_data), use_container_width=True)
-    st.markdown("---")
-
-# Weighted Comparable Benchmark Preview Option
-show_weighted_preview = st.checkbox("Show Weighted Comparable Benchmark Preview")
-if show_weighted_preview:
-    st.warning("⚠️ **Weighted Comparable Benchmark Preview is experimental and for estimator review. Existing benchmark calculations remain unchanged.**")
-    
-    rules = comparable_assembly_logic.load_rules()
-    
-    # 1. Build target text from sidebar selections
-    target_parts = []
-    if is_master:
-        t_mat = clean_str(mat_type)
-        t_board = clean_str(cb_type)
-        t_mat_att = clean_str(mat_attach)
-        t_board_att = clean_str(cb_attach)
-        
-        if t_mat and t_mat.lower() not in ["", "all", "nan", "n/a"]:
-            target_parts.append(t_mat)
-        if t_board and t_board.lower() not in ["", "all", "nan", "n/a"]:
-            target_parts.append(f"over {t_board}")
-            if t_board_att and t_board_att.lower() not in ["", "all", "nan", "n/a"]:
-                target_parts.append(f"({t_board_att})")
-        if t_mat_att and t_mat_att.lower() not in ["", "all", "nan", "n/a"]:
-            target_parts.append(f"attached {t_mat_att}")
-    else:
-        t_coat = clean_str(mat_type)
-        if t_coat and t_coat.lower() not in ["", "all", "nan", "n/a"]:
-            target_parts.append(t_coat)
-            
-    target_text = " ".join(target_parts)
-    st.markdown(f"**Target Assembly Description:** \"{target_text}\"")
-    
-    # 2. Process each historical job in matched_jobs
-    weighted_jobs_data = []
-    
-    for j in matched_jobs:
-        mat_type_h = clean_str(j.get("Roof Material Type"))
-        board_type_h = clean_str(j.get("Cover Board Type"))
-        mat_att_h = clean_str(j.get("Roof Material Attachment"))
-        board_att_h = clean_str(j.get("Cover Board Attachment"))
-        notes_h = clean_str(j.get("Special Notes"))
-        
-        if is_master:
-            parts_h = []
-            if mat_type_h and mat_type_h.lower() != "nan":
-                parts_h.append(mat_type_h)
-            if board_type_h and board_type_h.lower() != "nan":
-                parts_h.append(f"over {board_type_h}")
-                if board_att_h and board_att_h.lower() != "nan":
-                    parts_h.append(f"({board_att_h})")
-            if mat_att_h and mat_att_h.lower() != "nan":
-                parts_h.append(f"attached {mat_att_h}")
-            if notes_h and notes_h.lower() != "nan" and notes_h != "":
-                parts_h.append(f"[{notes_h}]")
-            historical_row_text = " ".join(parts_h)
-        else:
-            coating_spec_h = clean_str(j.get("Coating Spec"))
-            notes_h = clean_str(j.get("Notes"))
-            steps_h = [clean_str(j.get(f"Step {i}")) for i in range(1, 7)]
-            steps_nonempty_h = [s for s in steps_h if s]
-            
-            parts_h = []
-            if coating_spec_h and coating_spec_h.lower() != "nan":
-                parts_h.append(coating_spec_h)
-            for s in steps_nonempty_h:
-                parts_h.append(s)
-            if notes_h and notes_h.lower() != "nan":
-                parts_h.append(f"[{notes_h}]")
-            historical_row_text = ", ".join(parts_h)
-            
-        res = comparable_assembly_logic.compare_assembly_dimensions(target_text, historical_row_text, rules)
-        
-        j["comp_tier"] = res["overall_tier"]
-        j["comp_weight"] = res["overall_weight"]
-        j["comp_reason"] = res["overall_reason"]
-        
-        sq = float(j.get("Total Squares") or 0.0)
-        
-        # Calculate clean benchmark direct cost for this job
-        type_g_orig = float(j.get("Type G Total") or 0.0)
-        scaffold = float(j.get("Scaffold") or 0.0)
-        type_g = max(0.0, type_g_orig - scaffold)
-        labor = float(j.get("Total Labor") or 0.0)
-        mats_orig = sum(float(j.get(c) or 0.0) for c in mat_cols)
-        special = float(j.get("03-0120 Special (Skylights/Hatches)") or 0.0)
-        mats = max(0.0, mats_orig - special)
-        hist_direct_cost = type_g + labor + mats
-        
-        cps_val = 0.0
-        if sq > 0 and hist_direct_cost > 0:
-            cps_val = hist_direct_cost / sq
-        j["cps_clean_sq"] = cps_val
-        
-        type_g_sq_val = 0.0
-        if sq > 0:
-            type_g_sq_val = type_g / sq
-        j["type_g_sq_i"] = type_g_sq_val
-        
-        mat_sq_val = 0.0
-        if sq > 0:
-            mat_sq_val = mats / sq
-        j["mat_sq_i"] = mat_sq_val
-        
-    # 3. Filter down to jobs with weight > 0.00
-    weighted_jobs = [j for j in matched_jobs if j.get("comp_weight", 0.0) > 0.0]
-    
-    if not weighted_jobs:
-        st.info("ℹ️ **No historical comparable jobs matched the target assembly description. Adjust your filters to select specific assembly materials or attachments.**")
-    else:
-        # User method selection
-        weighted_method = st.selectbox(
-            "Weighted Calculation Method",
-            ["Weighted Average", "Weighted Median", "Trimmed Weighted Average"],
-            index=1,
-            help="Choose the mathematical method for the weighted comparable preview calculations."
-        )
-        
-        st.markdown(
-            "* **Weighted Average**: May be influenced by outliers.\n"
-            "* **Weighted Median**: More conservative and resistant to outliers.\n"
-            "* **Trimmed Weighted Average**: Removes the highest and lowest weighted tails (10% each) before averaging."
-        )
-        
-        # Apply Fallback Logic
-        active_method = weighted_method
-        fallback_msg = ""
-        
-        if weighted_method == "Trimmed Weighted Average":
-            # Trimmed Weighted Average requires at least 3 jobs
-            if len(weighted_jobs) < 3:
-                active_method = "Weighted Median"
-                fallback_msg = "⚠️ **Trimmed Weighted Average requires at least 3 weighted jobs. Falling back to Weighted Median.**"
-                
-        if active_method == "Weighted Median":
-            if not weighted_jobs:
-                active_method = "Weighted Average"
-                fallback_msg = "⚠️ **Weighted Median cannot be calculated (no valid weighted jobs). Falling back to Weighted Average.**"
-                
-        if fallback_msg:
-            st.warning(fallback_msg)
-            
-        # Perform calculations
-        cps_vals = [j.get("cps_clean_sq", 0.0) for j in weighted_jobs]
-        weights = [j.get("comp_weight", 0.0) for j in weighted_jobs]
-        
-        # Filter down to positive values for cost/SQ
-        cps_valid_indices = [i for i, v in enumerate(cps_vals) if v > 0.0]
-        cps_vals_f = [cps_vals[i] for i in cps_valid_indices]
-        weights_cps_f = [weights[i] for i in cps_valid_indices]
-        
-        weighted_cps = 0.0
-        cps_included_sub_indices = set()
-        
-        if cps_vals_f:
-            if active_method == "Weighted Average":
-                weighted_cps = weighted_average(cps_vals_f, weights_cps_f)
-                cps_included_sub_indices = set(range(len(cps_vals_f)))
-            elif active_method == "Weighted Median":
-                weighted_cps = weighted_median(cps_vals_f, weights_cps_f)
-                cps_included_sub_indices = set(range(len(cps_vals_f)))
-            elif active_method == "Trimmed Weighted Average":
-                try:
-                    weighted_cps, cps_included_sub_indices = trimmed_weighted_average(cps_vals_f, weights_cps_f)
-                except ValueError as e:
-                    # Fallback to Weighted Median
-                    weighted_cps = weighted_median(cps_vals_f, weights_cps_f)
-                    cps_included_sub_indices = set(range(len(cps_vals_f)))
-                    st.warning(f"⚠️ **Cost/SQ Trimmed Average failed: {e}. Falling back to Weighted Median.**")
-                    
-        cps_included_indices = {cps_valid_indices[i] for i in cps_included_sub_indices}
-        
-        # SQ/MD (Productivity)
-        weighted_labor_jobs = [j for j in valid_labor_jobs if j.get("comp_weight", 0.0) > 0.0]
-        sqmd_vals = [float(j.get("SQ/MD") or 0.0) for j in weighted_labor_jobs]
-        weights_sqmd = [j.get("comp_weight", 0.0) for j in weighted_labor_jobs]
-        
-        sqmd_valid_indices = [i for i, v in enumerate(sqmd_vals) if v > 0.0]
-        sqmd_vals_f = [sqmd_vals[i] for i in sqmd_valid_indices]
-        weights_sqmd_f = [weights_sqmd[i] for i in sqmd_valid_indices]
-        
-        weighted_sqmd_avg = 0.0
-        sqmd_included_sub_indices = set()
-        
-        if sqmd_vals_f:
-            if active_method == "Weighted Average":
-                weighted_sqmd_avg = weighted_average(sqmd_vals_f, weights_sqmd_f)
-                sqmd_included_sub_indices = set(range(len(sqmd_vals_f)))
-            elif active_method == "Weighted Median":
-                weighted_sqmd_avg = weighted_median(sqmd_vals_f, weights_sqmd_f)
-                sqmd_included_sub_indices = set(range(len(sqmd_vals_f)))
-            elif active_method == "Trimmed Weighted Average":
-                try:
-                    weighted_sqmd_avg, sqmd_included_sub_indices = trimmed_weighted_average(sqmd_vals_f, weights_sqmd_f)
-                except ValueError as e:
-                    weighted_sqmd_avg = weighted_median(sqmd_vals_f, weights_sqmd_f)
-                    sqmd_included_sub_indices = set(range(len(sqmd_vals_f)))
-                    st.warning(f"⚠️ **SQ/MD Trimmed Average failed: {e}. Falling back to Weighted Median.**")
-                    
-        # Type G
-        type_g_vals = [j.get("type_g_sq_i", 0.0) for j in weighted_jobs]
-        type_g_valid_indices = [i for i, v in enumerate(type_g_vals) if v > 0.0]
-        type_g_vals_f = [type_g_vals[i] for i in type_g_valid_indices]
-        weights_type_g_f = [weights[i] for i in type_g_valid_indices]
-        
-        weighted_type_g_sq = 0.0
-        type_g_included_sub_indices = set()
-        
-        if type_g_vals_f:
-            if active_method == "Weighted Average":
-                weighted_type_g_sq = weighted_average(type_g_vals_f, weights_type_g_f)
-                type_g_included_sub_indices = set(range(len(type_g_vals_f)))
-            elif active_method == "Weighted Median":
-                weighted_type_g_sq = weighted_median(type_g_vals_f, weights_type_g_f)
-                type_g_included_sub_indices = set(range(len(type_g_vals_f)))
-            elif active_method == "Trimmed Weighted Average":
-                try:
-                    weighted_type_g_sq, type_g_included_sub_indices = trimmed_weighted_average(type_g_vals_f, weights_type_g_f)
-                except ValueError as e:
-                    weighted_type_g_sq = weighted_median(type_g_vals_f, weights_type_g_f)
-                    type_g_included_sub_indices = set(range(len(type_g_vals_f)))
-                    st.warning(f"⚠️ **Type G Trimmed Average failed: {e}. Falling back to Weighted Median.**")
-                    
-        # Materials
-        mat_vals = [j.get("mat_sq_i", 0.0) for j in weighted_jobs]
-        mat_valid_indices = [i for i, v in enumerate(mat_vals) if v > 0.0]
-        mat_vals_f = [mat_vals[i] for i in mat_valid_indices]
-        weights_mat_f = [weights[i] for i in mat_valid_indices]
-        
-        weighted_mats_sq = 0.0
-        mat_included_sub_indices = set()
-        
-        if mat_vals_f:
-            if active_method == "Weighted Average":
-                weighted_mats_sq = weighted_average(mat_vals_f, weights_mat_f)
-                mat_included_sub_indices = set(range(len(mat_vals_f)))
-            elif active_method == "Weighted Median":
-                weighted_mats_sq = weighted_median(mat_vals_f, weights_mat_f)
-                mat_included_sub_indices = set(range(len(mat_vals_f)))
-            elif active_method == "Trimmed Weighted Average":
-                try:
-                    weighted_mats_sq, mat_included_sub_indices = trimmed_weighted_average(mat_vals_f, weights_mat_f)
-                except ValueError as e:
-                    weighted_mats_sq = weighted_median(mat_vals_f, weights_mat_f)
-                    mat_included_sub_indices = set(range(len(mat_vals_f)))
-                    st.warning(f"⚠️ **Material Trimmed Average failed: {e}. Falling back to Weighted Median.**")
-                    
-        weighted_est_md = (sample_squares / weighted_sqmd_avg) if weighted_sqmd_avg > 0 else 0.0
-        weighted_labor_cost = weighted_est_md * labor_rate
-        weighted_expected_type_g = weighted_type_g_sq * sample_squares
-        weighted_expected_mats = weighted_mats_sq * sample_squares
-        weighted_est_total_cost = weighted_expected_type_g + weighted_labor_cost + weighted_expected_mats
-        
-        diff_dollars = weighted_est_total_cost - est_total_cost
-        diff_pct = (diff_dollars / est_total_cost * 100) if est_total_cost > 0 else 0.0
-        
-        # 5. Show side-by-side comparison table
-        st.markdown(f"### Model Comparison (Selected: **{weighted_method}**{f' - Fallback to **{active_method}**' if active_method != weighted_method else ''})")
-        
-        comparison_data = [
-            {"Metric": "Clean Benchmark Direct Cost/SQ (Median vs Weighted)", "Existing Baseline": f"${cps_med:,.2f}", "Weighted Comparable": f"${weighted_cps:,.2f}"},
-            {"Metric": "Roofing SQ/MD (Volume-Weighted vs Weighted)", "Existing Baseline": f"{weighted_sq_md:,.3f}", "Weighted Comparable": f"{weighted_sqmd_avg:,.3f}"}
-        ]
-        st.dataframe(pd.DataFrame(comparison_data), hide_index=True, use_container_width=True)
-        
-        st.markdown("#### Estimated Totals Comparison")
-        m_col1, m_col2 = st.columns(2)
-        
-        diff_md = weighted_est_md - est_md
-        m_col1.metric("Estimated Man Days (MD)", f"{weighted_est_md:,.2f}", delta=f"{diff_md:+.2f} MD vs Baseline", delta_color="inverse")
-        m_col2.metric("Estimated Direct Cost Total", f"${weighted_est_total_cost:,.2f}", delta=f"${diff_dollars:,.2f} ({diff_pct:+.2f}%) vs Baseline", delta_color="inverse")
-        
-    # 6. Show weighted comparable jobs table
-    st.markdown("### Weighted Comparable Jobs")
-    jobs_preview = []
-    for j in matched_jobs:
-        weight_val = j.get("comp_weight", 0.0)
-        
-        # Determine inclusion status
-        if not weighted_jobs:
-            included_in_calc = "No (Excluded)"
-        elif weight_val == 0.0:
-            included_in_calc = "No (Excluded)"
-        elif active_method == "Trimmed Weighted Average":
-            try:
-                idx_in_weighted = weighted_jobs.index(j)
-                if idx_in_weighted in cps_included_indices:
-                    included_in_calc = "Yes"
-                else:
-                    included_in_calc = "No (Trimmed)"
-            except ValueError:
-                included_in_calc = "No (Excluded)"
-        else:
-            if j.get("cps_clean_sq", 0.0) > 0.0:
-                included_in_calc = "Yes"
-            else:
-                included_in_calc = "No (No Cost Data)"
-                
-        jobs_preview.append({
-            "Job#": j.get("Job#", ""),
-            "Address": j.get("Address", ""),
-            "City": j.get("City", ""),
-            "Aerial View 🛰️": make_google_maps_link(j.get("Address"), j.get("City")),
-            "Total Squares": j.get("Total Squares", 0.0),
-            "Existing Match Tier": tier_used,
-            "Comparable Assembly Tier": j.get("comp_tier", "Excluded"),
-            "Comparable Assembly Weight": weight_val,
-            "Comparable Reason": j.get("comp_reason", "No match"),
-            "Clean Cost/SQ": j.get("cps_clean_sq", 0.0),
-            "SQ/MD": j.get("SQ/MD", 0.0),
-            "Included in Calc": included_in_calc
-        })
-        
-    df_jobs_preview = pd.DataFrame(jobs_preview)
-    
-    # Reorder columns to place "Aerial View 🛰️" right after "City" or "Address"
-    cols = list(df_jobs_preview.columns)
-    if "Aerial View 🛰️" in cols:
-        cols.remove("Aerial View 🛰️")
-        insert_idx = cols.index("City") + 1 if "City" in cols else (cols.index("Address") + 1 if "Address" in cols else 1)
-        cols.insert(insert_idx, "Aerial View 🛰️")
-        df_jobs_preview = df_jobs_preview[cols]
-        
-    st.dataframe(
-        df_jobs_preview,
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "Aerial View 🛰️": st.column_config.LinkColumn(
-                "Aerial View 🛰️",
-                help="Click to view satellite map",
-                display_text="View Map 🗺️"
-            ),
-            "Total Squares": st.column_config.NumberColumn("Total Squares", format="%,.2f"),
-            "Comparable Assembly Weight": st.column_config.NumberColumn("Comparable Assembly Weight", format="%,.2f"),
-            "Clean Cost/SQ": st.column_config.NumberColumn("Clean Cost/SQ", format="$%,.2f"),
-            "SQ/MD": st.column_config.NumberColumn("SQ/MD", format="%,.2f")
-        }
-    )
-    
-    st.info("ℹ️ **This model adjusts the influence of related assemblies but does not yet replace the primary benchmark model.**")
-    st.markdown("---")
-
-with st.expander("Excluded Rows / Benchmark Eligibility Audit"):
-    if is_master:
-        st.markdown(f"**Eligible Benchmark Jobs:** {len(eligible_jobs)} | **Excluded / Ineligible Jobs:** {len(excluded_jobs)} unique rows. Exclusion reasons may overlap.")
-        if excluded_jobs:
-            st.dataframe(pd.DataFrame(excluded_jobs), use_container_width=True)
-        else:
-            st.info("No rows were excluded.")
-
-with st.expander("Available Historical Filter Values"):
-    if is_master:
-        f_master_cols = ["Spec Type", "Insulation Thickness/R-Value", "Roof Material Type", "Roof Material Attachment", "Cover Board Type", "City"]
-        for cat in f_master_cols:
-            if cat in df_tpopvc.columns:
-                val_counts = df_tpopvc[cat].value_counts().head(10)
-                st.markdown(f"**{cat}**")
-                for val, count in val_counts.items():
-                    st.markdown(f"  * {val}: {count}")
-    else:
-        for cat in ["Spec Type", "Coating Spec", "City"]:
-            if cat in df_active.columns:
-                val_counts = df_active[cat].value_counts().head(10)
-                st.markdown(f"**{cat}**")
-                for val, count in val_counts.items():
-                    st.markdown(f"  * {val}: {count}")
-
 
 st.markdown("---")
-st.header("Phase 6 Data Audit")
-st.markdown("Jobs below are excluded from benchmark calculations due to the 30-Day Benchmark Eligibility Rule (Report >= Complete + 30 days).")
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("TPO-PVC (Ineligible)")
-    if df_master is not None and not df_tpopvc_ineligible.empty:
-        cols = [c for c in ["Job#", "City", "Complete", "Report", "Ineligible Reason"] if c in df_tpopvc_ineligible.columns]
-        st.dataframe(df_tpopvc_ineligible[cols], use_container_width=True)
-    else:
-        st.write("None")
-
-with col2:
-    st.subheader("Coating Projects (Ineligible)")
-    if df_master is not None and not df_coating_ineligible.empty:
-        cols = [c for c in ["Job#", "City", "Complete", "Report", "Ineligible Reason"] if c in df_coating_ineligible.columns]
-        st.dataframe(df_coating_ineligible[cols], use_container_width=True)
-    else:
-        st.write("None")
+st.info("**Note:** This tool provides a historical baseline based on past performance. It is a sanity-check mechanism and does not account for unique site conditions, extreme chop/complexity, or current supply chain volatility.")
