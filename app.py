@@ -217,6 +217,8 @@ COLUMN_RENAME_MAP = {
     "03-0101 - Materials - Base": "03-0101 Base",
     "03-0102 - Materials - Ply": "03-0102 Ply",
     "03-0103 - Materials - Capsheet": "03-0103 Capsheet",
+    "03-0104 - Materials - Asphalt": "03-0104 Asphalt",
+    "03-0105 - Materials - Gravel": "03-0105 Gravel",
     "03-0106 - Materials - Shingles": "03-0106 Shingles",
     "03-0107 - Materials - Shingle Felt": "03-0107 Shingle Felt",
     "03-0108 - Materials - Lumber": "03-0108 Lumber",
@@ -227,6 +229,7 @@ COLUMN_RENAME_MAP = {
     "03-0113 - Materials - Insulation": "03-0113 Insulation",
     "03-0115 - Materials - Tile": "03-0115 Tile",
     "03-0116 - Materials - Emulsion": "03-0116 Emulsion",
+    "03-0117 - Materials - Polyester rolls": "03-0117 Polyester Rolls",
     "03-0118 - Material - Waterproofing": "03-0118 Waterproofing",
     "03-0120 - Material - Misc (other)": "03-0120 Misc (other)",
     "03-0120 - Special Cost Items": "03-0120 Special (Skylights/Hatches)",
@@ -265,9 +268,11 @@ COST_BREAKDOWN_TYPE_G_COLS = [
 # Type M: post-rename internal names for all included Material codes
 COST_BREAKDOWN_TYPE_M_COLS = [
     "03-0100 Fasteners", "03-0101 Base", "03-0102 Ply", "03-0103 Capsheet",
+    "03-0104 Asphalt", "03-0105 Gravel",
     "03-0106 Shingles", "03-0107 Shingle Felt", "03-0108 Lumber",
     "03-0109 Cold Adhesive", "03-0110 Sheetmetal", "03-0111 Modified SBS",
     "03-0112 Coating", "03-0113 Insulation", "03-0115 Tile", "03-0116 Emulsion",
+    "03-0117 Polyester Rolls",
     "03-0118 Waterproofing", "03-0120 Misc (other)", "03-0125 Home Depot Purchases",
     "03-0130 Misc. Supplies", "03-0140 Tax", "03-0150 DENS DECK 4x8",
     "03-0160 DENS DECK 4x4", "03-0201 Single Ply Memb.", "03-0202 Fleeceback Memb.",
@@ -548,7 +553,7 @@ def load_data():
     
     # Route jobs by Spec Type
     # TPO-PVC: Tear-Off and Overlay rows
-    tpopvc_mask = df_all["Spec Type"].astype(str).str.strip().str.lower().isin(["tear-off", "overlay"])
+    tpopvc_mask = df_all["Spec Type"].astype(str).str.strip().str.lower().isin(["tear-off", "tear off", "overlay"])
     df_tpopvc = df_all[tpopvc_mask].copy()
     
     # Coating: Coating rows
@@ -619,7 +624,7 @@ if not df_permit.empty:
     df_permit["Permit % of Contract"] = np.where(df_permit["Contract"] > 0, (df_permit["Permit"] / df_permit["Contract"]) * 100.0, np.nan)
 
 # Disposal Data (TPO-PVC Tear-Off only)
-disp_mask = (df_tpopvc_eligible["Spec Type"].astype(str).str.strip().str.lower() == "tear-off") & (pd.to_numeric(df_tpopvc_eligible["Disposal"], errors='coerce').fillna(0) > 0) & (pd.to_numeric(df_tpopvc_eligible["Total Squares"], errors='coerce').fillna(0) > 0) & (~df_tpopvc_eligible["Job#"].astype(str).str.lower().isin(["median", "sample"]))
+disp_mask = (df_tpopvc_eligible["Spec Type"].astype(str).str.strip().str.lower().isin(["tear-off", "tear off"])) & (pd.to_numeric(df_tpopvc_eligible["Disposal"], errors='coerce').fillna(0) > 0) & (pd.to_numeric(df_tpopvc_eligible["Total Squares"], errors='coerce').fillna(0) > 0) & (~df_tpopvc_eligible["Job#"].astype(str).str.lower().isin(["median", "sample"]))
 df_disposal = df_tpopvc_eligible[disp_mask].copy()
 if not df_disposal.empty:
     df_disposal["Disposal Cost/SQ"] = df_disposal["Disposal"] / df_disposal["Total Squares"]
@@ -1380,7 +1385,7 @@ with col_perm:
 disposal_export_data = {}
 with col_disp:
     st.markdown("#### Disposal Cost Estimator")
-    if spec_type not in ["Tear-Off", "TO"] and not (is_master and spec_type == "All"):
+    if spec_type not in ["Tear-Off", "Tear Off", "TO"] and not (is_master and spec_type == "All"):
         st.info("Disposal estimator is only available when Spec Type is Tear-Off.")
         disposal_export_data = {"Active": False, "Msg": "Inactive (Spec Type is not Tear-Off)"}
     else:
