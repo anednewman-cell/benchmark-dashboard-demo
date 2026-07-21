@@ -816,7 +816,11 @@ source_sheet = "TPO-PVC"
 sample_squares = st.sidebar.number_input("Target Project Size (Squares)", value=float(DEFAULT_SAMPLE_SQUARES), step=10.0, format="%.2f")
 labor_rate = st.sidebar.number_input("Man Day Labor Rate", value=430.00, step=25.0, format="%.2f")
 min_jobs = st.sidebar.number_input("Min Comparable Jobs", value=5, step=1)
-
+labor_calc_method = st.sidebar.selectbox(
+    "Labor Production Metric",
+    ["Weighted Median (Recommended)", "Trimmed Weighted Average", "Weighted Average"],
+    index=0
+)
 st.sidebar.markdown("### Filters")
 is_master = (source_sheet == "TPO-PVC")
 df_active = df_tpopvc_eligible if is_master else df_coating_eligible
@@ -994,9 +998,53 @@ for j in matched_jobs:
     if sq > 0 and md > 0:
         valid_labor_jobs.append(j)
 
-sum_sq = sum(float(j.get("Total Squares") or 0.0) for j in valid_labor_jobs)
-sum_md = sum(float(j.get("Estimator MD") or 0.0) for j in valid_labor_jobs)
-weighted_sq_md = (sum_sq / sum_md) if sum_md > 0 else 0.0
+labor_calc_data = []
+for j in valid_labor_jobs:
+    sq = float(j.get("Total Squares") or 0.0)
+    md = float(j.get("Estimator MD") or 0.0)
+    labor_calc_data.append({'sq': sq, 'md': md, 'sq_md': sq / md})
+
+labor_calc_data.sort(key=lambda x: x['sq_md'])
+
+weighted_sq_md = 0.0
+applied_calc_method = labor_calc_method
+fallback_triggered = False
+
+if not labor_calc_data:
+    weighted_sq_md = 0.0
+else:
+    if applied_calc_method == "Trimmed Weighted Average":
+        if len(labor_calc_data) < 4:
+            applied_calc_method = "Weighted Median (Recommended)"
+            fallback_triggered = True
+        else:
+            trim_count = max(1, int(len(labor_calc_data) * 0.10))
+            if len(labor_calc_data) - 2 * trim_count <= 0:
+                applied_calc_method = "Weighted Median (Recommended)"
+                fallback_triggered = True
+            else:
+                trimmed_data = labor_calc_data[trim_count:-trim_count]
+                sum_sq = sum(d['sq'] for d in trimmed_data)
+                sum_md = sum(d['md'] for d in trimmed_data)
+                weighted_sq_md = sum_sq / sum_md if sum_md > 0 else 0.0
+
+    if applied_calc_method == "Weighted Median (Recommended)":
+        total_sq = sum(d['sq'] for d in labor_calc_data)
+        half_sq = total_sq / 2.0
+        cumulative_sq = 0.0
+        for d in labor_calc_data:
+            cumulative_sq += d['sq']
+            if cumulative_sq >= half_sq:
+                weighted_sq_md = d['sq_md']
+                break
+
+    if applied_calc_method == "Weighted Average":
+        sum_sq = sum(d['sq'] for d in labor_calc_data)
+        sum_md = sum(d['md'] for d in labor_calc_data)
+        weighted_sq_md = sum_sq / sum_md if sum_md > 0 else 0.0
+
+if fallback_triggered:
+    st.sidebar.warning("Not enough comparable jobs to calculate Trimmed Weighted Average. Falling back to Weighted Median.")
 est_md = (sample_squares / weighted_sq_md) if weighted_sq_md > 0 else 0.0
 est_labor_cost = est_md * labor_rate
 

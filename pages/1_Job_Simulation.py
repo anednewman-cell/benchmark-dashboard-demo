@@ -126,7 +126,7 @@ proj_sq_md = 0.0
 
 # --- STEP 1: JOB INFO ---
 with st.container(border=True):
-    st.markdown("<h2 class='step-header'>Step 1: Job Info</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='step-header'>Job Info</h2>", unsafe_allow_html=True)
     st.markdown('<div class="hide-me-print"></div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     total_squares = col1.number_input("Total Squares", value=500.0, step=10.0, min_value=0.1)
@@ -149,11 +149,11 @@ with st.container(border=True):
 
 # --- STEP 2: MATERIALS SIMULATION ---
 with st.container(border=True):
-    st.markdown("<h2 class='step-header'>Step 2: Materials Simulation</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='step-header'>Materials Simulation</h2>", unsafe_allow_html=True)
     st.markdown('<div class="hide-me-print"></div>', unsafe_allow_html=True)
 
 if not spec_type or spec_type == "Any":
-    st.info("Please select a Spec Type in Step 1 to run the Materials simulation.")
+    st.info("Please select a Spec Type to run the Materials simulation.")
 else:
     # 1. Exact Spec Filtering
     mask = (df_all["Spec Type"] == spec_type)
@@ -228,7 +228,8 @@ else:
                 f"""
                 <div class='premium-metric'>
                     <h3 class='premium-title'>Projected Material Cost</h3>
-                    <h1 class='premium-value'>${weighted_avg_mat_cost:,.2f} <span style='font-size: 1.2rem; color: #555;'>/ SQ</span></h1>
+                    <h1 class='premium-value'>${weighted_avg_mat_cost * total_squares:,.2f}</h1>
+                    <p style='font-size: 1.2rem; color: #555; margin-bottom: 5px;'>${weighted_avg_mat_cost:,.2f} / SQ</p>
                     <p class='premium-sub'>Calculated from {len(valid_mats)} eligible comparable jobs</p>
                 </div>
                 <br>
@@ -273,7 +274,7 @@ else:
 
 # --- STEP 3: LABOR SIMULATION ---
 with st.container(border=True):
-    st.markdown("<h2 class='step-header'>Step 3: Labor Simulation</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='step-header'>Labor Simulation</h2>", unsafe_allow_html=True)
     st.markdown('<div class="hide-me-print"></div>', unsafe_allow_html=True)
     
     total_lab_cost = 0.0
@@ -287,7 +288,7 @@ with st.container(border=True):
 
 
 if not spec_type or spec_type == "Any":
-    st.info("Please select a Spec Type in Step 1 to run the Labor simulation.")
+    st.info("Please select a Spec Type to run the Labor simulation.")
 else:
     # Helper to classify Cover Board
     def get_cb_class(cb_str):
@@ -489,12 +490,12 @@ else:
 
 # --- STEP 4: GENERAL COSTS ---
 with st.container(border=True):
-    st.markdown("<h2 class='step-header'>Step 4: General Costs</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='step-header'>General Costs</h2>", unsafe_allow_html=True)
     st.markdown('<div class="hide-me-print"></div>', unsafe_allow_html=True)
 
     final_gen_cost = 0.0
     if not spec_type or spec_type == "Any":
-        st.info("Please select a Spec Type in Step 1 to run the General Costs simulation.")
+        st.info("Please select a Spec Type to run the General Costs simulation.")
     else:
         # 1. Base Filter (Spec Type) for General Costs (using 30-Day rule)
         gen_mask = (df_all["Spec Type"] == spec_type)
@@ -702,7 +703,7 @@ with st.container(border=True):
 
     # --- STEP 5: MARGIN & PROFIT ---
     with st.container(border=True):
-        st.markdown("<h2 class='step-header'>Step 5: Margin & Profit</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 class='step-header'>Margin & Profit</h2>", unsafe_allow_html=True)
         st.markdown('<div class="hide-me-print"></div>', unsafe_allow_html=True)
 
         tot_mat_cost = weighted_avg_mat_cost * total_squares
@@ -764,7 +765,7 @@ st.markdown(
 
 # --- STEP 6: Summary & Export ---
 with st.container(border=True):
-    st.markdown("<h2 class='step-header'>Step 6: Summary & Export</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='step-header'>Summary & Export</h2>", unsafe_allow_html=True)
     
     # Remove the broken print CSS - replaced with proper PDF generation
     
