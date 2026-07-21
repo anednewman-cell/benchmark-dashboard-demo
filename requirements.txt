@@ -4,3 +4,5 @@ openpyxl
 streamlit
 altair
 fpdf2
+plotly
+streamlit-option-menu
