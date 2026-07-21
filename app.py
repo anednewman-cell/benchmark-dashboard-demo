@@ -8,7 +8,10 @@ import openpyxl
 import re
 import urllib.parse
 import streamlit as st
+import contextlib
+import plotly.graph_objects as go
 import altair as alt
+from streamlit_option_menu import option_menu
 import scripts.comparable_assembly_logic as comparable_assembly_logic
 
 
@@ -16,9 +19,14 @@ DEFAULT_SAMPLE_SQUARES = 500
 
 st.set_page_config(page_title="Historical Estimating Benchmark", layout="wide")
 
-# Inject CSS for printer optimization
+# Inject CSS for printer optimization and UI layout
 st.markdown("""
 <style>
+/* Hide default multipage sidebar navigation */
+[data-testid="stSidebarNav"] {
+    display: none !important;
+}
+
 @media print {
     /* Hide interactive/non-content widgets */
     section[data-testid="stSidebar"],
@@ -175,9 +183,9 @@ SOURCE_DIR = PROJECT_ROOT / "data" / "source"
 DASHBOARD_DATA_DIR = PROJECT_ROOT / "data" / "dashboard"
 NEW_SOURCE_DIR = PROJECT_ROOT / "new source"
 
-OFFICIAL_FILE = str(PROJECT_ROOT / "data" / "Demo_Master_List.xlsx")
+OFFICIAL_FILE = str(NEW_SOURCE_DIR / "Master List NEW.xlsx")
 DATA_DIR = str(DASHBOARD_DATA_DIR)
-LOCAL_FILE = OFFICIAL_FILE
+LOCAL_FILE = str(DASHBOARD_DATA_DIR / "Master_List_NEW_DASHBOARD_COPY.xlsx")
 
 # Ensure directories exist
 SOURCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -194,9 +202,8 @@ def make_google_maps_link(address, city):
     return f"https://www.google.com/maps?q={urllib.parse.quote_plus(query)}&t=h"
 
 st.markdown("<h1 class='screen-only' style='margin-bottom: 0px;'>Historical Estimating Benchmark Dashboard</h1>", unsafe_allow_html=True)
+
 sticky_header_placeholder = st.empty()
-
-
 
 # Column name mapping: new spreadsheet column -> old internal column name
 # This allows all downstream code to continue using the old internal names
@@ -270,7 +277,7 @@ COST_BREAKDOWN_TYPE_M_COLS = [
     "03-0100 Fasteners", "03-0101 Base", "03-0102 Ply", "03-0103 Capsheet",
     "03-0104 Asphalt", "03-0105 Gravel",
     "03-0106 Shingles", "03-0107 Shingle Felt", "03-0108 Lumber",
-    "03-0109 Cold Adhesive", "03-0110 Sheetmetal", "03-0111 Modified SBS",
+    "03-0109 Cold Adhesive",    "03-0110 Sheetmetal", "03-0111 Modified SBS",
     "03-0112 Coating", "03-0113 Insulation", "03-0115 Tile", "03-0116 Emulsion",
     "03-0117 Polyester Rolls",
     "03-0118 Waterproofing", "03-0120 Misc (other)", "03-0125 Home Depot Purchases",
@@ -596,6 +603,16 @@ def apply_eligibility_rule(df):
                 gap = (row['Report'] - row['Complete']).days if pd.notna(row.get('Complete')) and pd.notna(row.get('Report')) else 0
                 reasons.append(f"Gap < 30 days ({gap} days)")
         ineligible_df["Ineligible Reason"] = reasons
+        # Calculate Days Overdue (Today - Complete Date)
+        today = pd.Timestamp.today().normalize()
+        def calc_days(comp_val):
+            if pd.isna(comp_val): return -1
+            try:
+                dt = pd.to_datetime(comp_val).normalize()
+                return (today - dt).days
+            except:
+                return -1
+        ineligible_df["Days Since Complete"] = ineligible_df["Complete"].apply(calc_days)
         
     return df[eligible_mask].copy(), ineligible_df
 
@@ -609,7 +626,7 @@ if df_master is not None:
     df_coating_eligible, df_coating_ineligible = apply_eligibility_rule(df_coating)
 
 if df_master is None:
-    st.warning("⚠️ Local dashboard data not found. Please click 'Update Dashboard Data' above to initialize.")
+    st.warning("⚠️ Local dashboard data not found.")
     st.stop()
 
 # Build base combo for allowances
@@ -808,51 +825,102 @@ def filter_jobs(df, filters, min_jobs, is_master=True, sample_squares=0.0, exclu
         return jobs, "Tier 4 (Global Fallback)", tier_counts, tier_jobs_dict, 4
 
 # Sidebar UI
-
+with st.sidebar:
+    selected_page = option_menu(
+        menu_title=None,
+        options=["Dashboard", "Job Simulation"],
+        icons=["bar-chart", "tools"],
+        default_index=0,
+        orientation="horizontal",
+        styles={
+            "container": {
+                "padding": "4px",
+                "background-color": "#f0f2f6",
+                "border-radius": "20px", 
+                "border": "1px solid #e0e0e0"
+            },
+            "icon": {"font-size": "14px"}, 
+            "nav-link": {
+                "font-size": "13px",
+                "text-align": "center",
+                "margin": "0px",
+                "border-radius": "20px",
+                "--hover-color": "#e2e6ea",
+                "color": "#555",
+                "white-space": "nowrap"
+            },
+            "nav-link-selected": {
+                "background-color": "#0F52BA",
+                "color": "white",
+                "font-weight": "bold"
+            },
+        }
+    )
+    
+    if selected_page == "Job Simulation":
+        st.switch_page("pages/1_Job_Simulation.py")
 
 st.sidebar.title("Configuration")
 
 source_sheet = "TPO-PVC"
-sample_squares = st.sidebar.number_input("Target Project Size (Squares)", value=float(DEFAULT_SAMPLE_SQUARES), step=10.0, format="%.2f")
-labor_rate = st.sidebar.number_input("Man Day Labor Rate", value=430.00, step=25.0, format="%.2f")
-min_jobs = st.sidebar.number_input("Min Comparable Jobs", value=5, step=1)
-labor_calc_method = st.sidebar.selectbox(
-    "Labor Production Metric",
-    ["Weighted Median (Recommended)", "Trimmed Weighted Average", "Weighted Average"],
-    index=0
-)
-st.sidebar.markdown("### Filters")
 is_master = (source_sheet == "TPO-PVC")
 df_active = df_tpopvc_eligible if is_master else df_coating_eligible
 
 def render_selectbox(label, col_name):
     opts = ["All"] + get_filter_options(df_active, col_name)
-    return st.sidebar.selectbox(label, opts, index=0)
+    # Using st.selectbox so it renders inside our context blocks (form/expander)
+    return st.selectbox(label, opts, index=0)
 
 filters = {}
 
-if is_master:
-    spec_type = render_selectbox("Spec Type", "Spec Type")
-    ins_r = render_selectbox("Insulation R-Value", "Insulation Thickness/R-Value")
-    cb_type = render_selectbox("Cover Board Type", "Cover Board Type")
-    mat_type = render_selectbox("Roof Material Type", "Roof Material Type")
-    mat_thick = render_selectbox("Roof Material Thickness", "Roof Material Thickness")
-    mat_attach = render_selectbox("Roof Material Attachment", "Roof Material Attachment")
-    
-    filters = {
-        "Spec Type": [spec_type] if spec_type else ["All"],
-        "Insulation Thickness/R-Value": [ins_r] if ins_r else ["All"],
-        "Cover Board Type": [cb_type] if cb_type else ["All"],
-        "Roof Material Type": [mat_type] if mat_type else ["All"],
-        "Roof Material Thickness": [mat_thick] if mat_thick else ["All"],
-        "Roof Material Attachment": [mat_attach] if mat_attach else ["All"],
-    }
-else:
-    coating_spec = render_selectbox("Coating Spec", "Coating Spec")
-    
-    filters = {
-        "Coating Spec": [coating_spec] if coating_spec else ["All"]
-    }
+with st.sidebar:
+    with st.form("sidebar_form", enter_to_submit=False):
+        sample_squares = st.number_input("Sample Squares", value=float(DEFAULT_SAMPLE_SQUARES), step=10.0, format="%.2f")
+        labor_rate = st.number_input("Labor Rate", value=430.00, step=25.0, format="%.2f")
+        min_jobs = st.number_input("Min Comparable Jobs", value=3, step=1)
+        labor_calc_method = st.selectbox(
+            "Labor Production Metric",
+            ["Weighted Median (Recommended)", "Trimmed Weighted Average", "Weighted Average"],
+            index=0
+        )
+        
+        if is_master:
+            spec_type = render_selectbox("Spec Type", "Spec Type")
+            ins_r = render_selectbox("Insulation R-Value", "Insulation Thickness/R-Value")
+            cb_type = render_selectbox("Cover Board Type", "Cover Board Type")
+            mat_type = render_selectbox("Roof Material Type", "Roof Material Type")
+            mat_thick = render_selectbox("Roof Material Thickness", "Roof Material Thickness")
+            mat_attach = render_selectbox("Roof Material Attachment", "Roof Material Attachment")
+            
+            filters = {
+                "Spec Type": [spec_type] if spec_type else ["All"],
+                "Insulation Thickness/R-Value": [ins_r] if ins_r else ["All"],
+                "Cover Board Type": [cb_type] if cb_type else ["All"],
+                "Roof Material Type": [mat_type] if mat_type else ["All"],
+                "Roof Material Thickness": [mat_thick] if mat_thick else ["All"],
+                "Roof Material Attachment": [mat_attach] if mat_attach else ["All"],
+            }
+        else:
+            coating_spec = render_selectbox("Coating Spec", "Coating Spec")
+            
+            filters = {
+                "Coating Spec": [coating_spec] if coating_spec else ["All"]
+            }
+                
+        submit_btn = st.form_submit_button("Apply Changes", type="primary", use_container_width=True)
+        
+    st.divider()
+    print_mode = st.checkbox("Enable Print Mode (Ctrl+P)", value=False)
+
+@contextlib.contextmanager
+def smart_expander(title, expanded=False):
+    if print_mode:
+        st.markdown(f"### {title}")
+        with st.container():
+            yield
+    else:
+        with st.expander(title, expanded=expanded):
+            yield
 
 # Fallbacks for variables removed from filters UI but still referenced downstream
 if not is_master:
@@ -897,11 +965,10 @@ if df_active is not None and not df_active.empty:
         label = f"{jno} | {sq_str} | {c_sq_str}"
         all_jobs_context[label] = jno
 
-# Retrieve exclusions from session state (UI is rendered below)
-if "exclude_dropdown" in st.session_state:
-    st.session_state["exclude_dropdown"] = [lbl for lbl in st.session_state["exclude_dropdown"] if lbl in all_jobs_context]
-selected_labels = st.session_state.get("exclude_dropdown", [])
-excluded_job_nos = [all_jobs_context.get(lbl) for lbl in selected_labels]
+# Retrieve exclusions from session state
+if "excluded_jobs" not in st.session_state:
+    st.session_state["excluded_jobs"] = []
+excluded_job_nos = st.session_state["excluded_jobs"]
 
 # Pass 2: Real Run (With exclusions)
 matched_jobs, tier_used, tier_counts, tier_jobs_dict, active_tier_level = filter_jobs(df_active, filters, min_jobs, is_master, sample_squares, excluded_job_nos)
@@ -969,12 +1036,39 @@ if is_master and not df_active.empty:
         sq_arr = get_numeric_series(df_active, "Total Squares", 0.0)
         df_active["Clean Benchmark Direct Cost/SQ"] = np.where(sq_arr > 0, df_active["Clean Benchmark Direct Cost"] / sq_arr, 0.0)
 
-# 3. Dynamic Sidebar Filters
-with st.sidebar:
-    st.markdown("### Tier Coverage")
-    max_sq_display = 10000.0 if sample_squares >= 500 else sample_squares * 2.50
-    st.sidebar.markdown(f"**Eligible Size Range:** {sample_squares * 0.40:,.2f} - {max_sq_display:,.2f} SQ")
-    st.sidebar.markdown(f"* Tier 1 Strict: {tier_counts['t1']} jobs\n* Tier 2 Major Specs: {tier_counts['t2']} jobs\n* Tier 3 Broad System: {tier_counts['t3']} jobs\n* Tier 4 Global Fallback: {tier_counts['t4']} jobs")
+
+
+
+def get_rate_stats(col_name):
+    rates = []
+    for j in matched_jobs:
+        sq = float(j.get("Total Squares") or 0.0)
+        if col_name == "03-0120 Special (Skylights/Hatches)":
+            continue
+        else:
+            val = float(j.get(col_name) or 0.0)
+        if val > 0.0 and sq > 0.0:
+            rates.append(val / sq)
+    if not rates:
+        return {"low": 0.0, "med": 0.0, "high": 0.0, "spread_pct": 0.0, "label": "Unknown", "color": "#6c757d"}
+    
+    r_low = np.percentile(rates, 25)
+    r_med = np.median(rates)
+    r_high = np.percentile(rates, 75)
+    
+    spread = r_high - r_low
+    spread_pct = (spread / r_med) * 100 if r_med > 0 else 0
+    
+    if spread_pct < 20:
+        label, color = "High Confidence", "#28a745"
+    elif spread_pct < 40:
+        label, color = "Good Confidence", "#e0a800"
+    elif spread_pct < 70:
+        label, color = "Fair Confidence", "#fd7e14"
+    else:
+        label, color = "Low Confidence", "#dc3545"
+        
+    return {"low": r_low, "med": r_med, "high": r_high, "spread_pct": spread_pct, "label": label, "color": color}
 
 def get_rate_median(col_name):
     rates = []
@@ -1044,8 +1138,50 @@ else:
         weighted_sq_md = sum_sq / sum_md if sum_md > 0 else 0.0
 
 if fallback_triggered:
-    st.sidebar.warning("Not enough comparable jobs to calculate Trimmed Weighted Average. Falling back to Weighted Median.")
+    st.warning("Not enough comparable jobs to calculate Trimmed Weighted Average. Falling back to Weighted Median.")
+
+# Calculate productivity variance for Type L
+sq_md_rates = []
+for j in valid_labor_jobs:
+    sq = float(j.get("Total Squares") or 0.0)
+    md = float(j.get("Estimator MD") or 0.0)
+    if md > 0:
+        sq_md_rates.append(sq / md)
+        
+if sq_md_rates:
+    sq_md_low = np.percentile(sq_md_rates, 25)
+    sq_md_med = np.median(sq_md_rates)
+    sq_md_high = np.percentile(sq_md_rates, 75)
+    
+    # Calculate spread based on inverted relationship (higher prod = lower cost)
+    # The spread is the difference in MD per SQ
+    md_sq_high = 1.0 / sq_md_low if sq_md_low > 0 else 0
+    md_sq_low = 1.0 / sq_md_high if sq_md_high > 0 else 0
+    md_sq_med = 1.0 / sq_md_med if sq_md_med > 0 else 0
+    
+    labor_spread = md_sq_high - md_sq_low
+    labor_spread_pct = (labor_spread / md_sq_med) * 100 if md_sq_med > 0 else 0
+    
+    if labor_spread_pct < 20:
+        l_label, l_color = "High Confidence", "#28a745"
+    elif labor_spread_pct < 40:
+        l_label, l_color = "Good Confidence", "#e0a800"
+    elif labor_spread_pct < 70:
+        l_label, l_color = "Fair Confidence", "#fd7e14"
+    else:
+        l_label, l_color = "Low Confidence", "#dc3545"
+        
+    labor_stats = {
+        "low_cost_sq": md_sq_low * labor_rate,
+        "high_cost_sq": md_sq_high * labor_rate,
+        "label": l_label,
+        "color": l_color
+    }
+else:
+    labor_stats = {"low_cost_sq": 0.0, "high_cost_sq": 0.0, "label": "Unknown", "color": "#6c757d"}
+
 est_md = (sample_squares / weighted_sq_md) if weighted_sq_md > 0 else 0.0
+
 est_labor_cost = est_md * labor_rate
 
 # Pricing (Median)
@@ -1132,10 +1268,60 @@ for col in display_mat_cols:
         desc = col.split(" ", 1)[1] if " " in col else ""
         recap_data.append({"Cost Code": code, "Description": desc, "Category": "Material", "Type": "Material", "Median Rate": rate, "Expected Total": rate * sample_squares})
 
-df_recap = pd.DataFrame(recap_data)
+df_raw_recap = pd.DataFrame(recap_data)
 
-# Precalculate quick reference totals
+# Precalculate quick reference totals (The Master Budget)
 est_total_cost = expected_type_g + est_labor_cost + expected_mats
+
+# --- Proportional Scaling to Match Master Budget ---
+scaled_recap_data = []
+if not df_raw_recap.empty:
+    for cat, master_budget in [("Other / General", expected_type_g), ("Labor", est_labor_cost), ("Material", expected_mats)]:
+        cat_df = df_raw_recap[df_raw_recap["Category"] == cat].copy()
+        if cat_df.empty: continue
+        
+        raw_cat_total = cat_df["Expected Total"].sum()
+        if raw_cat_total > 0 and master_budget > 0:
+            scale_factor = master_budget / raw_cat_total
+            cat_df["Expected Total"] = cat_df["Expected Total"] * scale_factor
+            cat_df["Median Rate"] = cat_df["Median Rate"] * scale_factor
+        elif master_budget <= 0:
+            cat_df["Expected Total"] = 0.0
+            cat_df["Median Rate"] = 0.0
+            
+        for _, row in cat_df.iterrows():
+            scaled_recap_data.append(row.to_dict())
+
+df_scaled_recap = pd.DataFrame(scaled_recap_data)
+
+# --- Apply Materiality Filter ---
+threshold = max(250.0, est_total_cost * 0.005)
+filtered_recap_data = []
+
+if not df_scaled_recap.empty:
+    for cat in ["Other / General", "Labor", "Material"]:
+        cat_df = df_scaled_recap[df_scaled_recap["Category"] == cat]
+        if cat_df.empty: continue
+        
+        keep_df = cat_df[cat_df["Expected Total"] >= threshold]
+        drop_df = cat_df[cat_df["Expected Total"] < threshold]
+        
+        for _, row in keep_df.iterrows():
+            filtered_recap_data.append(row.to_dict())
+            
+        if not drop_df.empty:
+            drop_total = drop_df["Expected Total"].sum()
+            drop_rate = drop_df["Median Rate"].sum()
+            filtered_recap_data.append({
+                "Cost Code": "00-0000",
+                "Description": f"Minor / Miscellaneous {cat} Costs",
+                "Category": cat,
+                "Type": "Consolidated",
+                "Median Rate": drop_rate,
+                "Expected Total": drop_total
+            })
+
+df_recap = pd.DataFrame(filtered_recap_data)
 sell_30 = est_total_cost / 0.70
 sell_40 = est_total_cost / 0.60
 sq_val = sample_squares if sample_squares > 0 else 1
@@ -1216,19 +1402,9 @@ if tier_used == "Tier 4 (Global Fallback)":
 col1, col2, col3 = st.columns(3)
 col1.metric("Comparable Jobs Found", len(matched_jobs))
 col2.metric("Match Level", tier_used)
-col3.metric("Target Roof Size", f"{sample_squares:,.2f}")
-
-st.markdown("---")
-st.header("Top Estimate Summary")
+col3.metric("Sample Squares", f"{sample_squares:,.2f}")
 
 if tier_used != "Tier 4 (Global Fallback)":
-    t1, t2, t3, t4, t5 = st.columns(5)
-    t1.metric("Clean Total Cost", f"${est_total_cost:,.2f}")
-    t1.caption("*(Baseline: Excludes Scaffolding, Deck Replacement, and Special Items)*")
-    t2.metric("Sell @ 30% Margin", f"${sell_30:,.2f}")
-    t3.metric("Sell @ 40% Margin", f"${sell_40:,.2f}")
-    t4.metric("Estimated MD", f"{est_md:,.2f}")
-    t5.metric("Weighted SQ/MD", f"{weighted_sq_md:,.2f}")
     
     # Inject Sticky Banner at the top of the page
     sticky_html = f"""
@@ -1273,9 +1449,10 @@ if tier_used != "Tier 4 (Global Fallback)":
     }}
     </style>
     <div class="sticky-banner screen-only">
-        <div class="sticky-stat"><div class="sticky-label">Clean Total Cost</div><div class="sticky-value">${est_total_cost:,.2f}</div></div>
-        <div class="sticky-stat"><div class="sticky-label">Sell @ 30% Margin</div><div class="sticky-value">${sell_30:,.2f}</div></div>
-        <div class="sticky-stat"><div class="sticky-label">Sell @ 40% Margin</div><div class="sticky-value sticky-highlight">${sell_40:,.2f}</div></div>
+        <div class="sticky-stat"><div class="sticky-label">Type G Cost</div><div class="sticky-value">${expected_type_g:,.2f}</div></div>
+        <div class="sticky-stat"><div class="sticky-label">Type L Cost</div><div class="sticky-value">${est_labor_cost:,.2f}</div></div>
+        <div class="sticky-stat"><div class="sticky-label">Type M Cost</div><div class="sticky-value">${expected_mats:,.2f}</div></div>
+        <div class="sticky-stat"><div class="sticky-label">Total Cost</div><div class="sticky-value sticky-highlight">${est_total_cost:,.2f}</div></div>
         <div class="sticky-stat"><div class="sticky-label">Estimated MD</div><div class="sticky-value">{est_md:,.2f}</div></div>
         <div class="sticky-stat"><div class="sticky-label">Weighted SQ/MD</div><div class="sticky-value">{weighted_sq_md:,.2f}</div></div>
     </div>
@@ -1333,263 +1510,316 @@ st.markdown("*These are independent budgeting tools and do not affect Clean Benc
 
 col_perm, col_disp, col_fuel = st.columns(3)
 
+
+def get_confidence_pill(low, med, high):
+    if med <= 0:
+        return ""
+    spread = high - low
+    spread_pct = (spread / med) * 100
+    
+    if spread_pct < 20:
+        label, color = "High Confidence", "#28a745"
+    elif spread_pct < 40:
+        label, color = "Good Confidence", "#e0a800"
+    elif spread_pct < 70:
+        label, color = "Fair Confidence", "#fd7e14"
+    else:
+        label, color = "Low Confidence", "#dc3545"
+        
+    return f"""<span style="background-color: {color}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; font-weight: bold;">{label}</span>"""
+
 # PERMIT ESTIMATOR
 permit_export_data = {}
 with col_perm:
-    st.markdown("#### Permit Cost Estimator")
-    if not df_permit.empty:
-        permit_cities = ["All Cities"] + sorted([c for c in df_permit["City"].dropna().unique() if str(c).strip() != ""])
-        permit_counts = df_permit["City"].dropna().astype(str).str.strip().value_counts().to_dict()
-        total_permit_count = len(df_permit)
-        
-        def format_permit_city(city_opt):
-            if city_opt == "All Cities":
-                return f"All Cities ({total_permit_count})"
-            count = permit_counts.get(city_opt, 0)
-            return f"{city_opt} ({count})"
-            
-        p_city = st.selectbox("Permit City", permit_cities, key="permit_city", format_func=format_permit_city)
-        
-        pdf = df_permit if p_city == "All Cities" else df_permit[df_permit["City"].astype(str).str.strip() == p_city]
-        p_count = len(pdf)
-        
-        if p_count >= 3:
-            p_low = np.percentile(pdf["Permit Cost/SQ"], 25)
-            p_med = np.median(pdf["Permit Cost/SQ"])
-            p_high = np.percentile(pdf["Permit Cost/SQ"], 75)
-            
-            sq = sample_squares if sample_squares > 0 else 1
-            
-            # 1. Square-Based Estimate
-            tab1, tab2 = st.tabs(["Square-Based", "Contract-Based"])
-            
-            with tab1:
-                st.metric("Estimated Permit Cost", f"${p_med * sq:,.2f}")
-                st.markdown(f"**Permit \\$/SQ:** \${p_med:,.2f}/SQ")
-                st.markdown(f"**Low / High Range:** \${p_low * sq:,.2f} - \${p_high * sq:,.2f}")
-                st.markdown(f"**Data Points Used:** {p_count}")
-            
-            # 2. Contract-Based Estimate
-            pdf_pct = pdf["Permit % of Contract"].dropna()
-            p_pct_count = len(pdf_pct)
-            
-            with tab2:
-                if p_pct_count >= 3 and sell_30 > 0:
-                    p_pct_low = np.percentile(pdf_pct, 25)
-                    p_pct_med = np.median(pdf_pct)
-                    p_pct_high = np.percentile(pdf_pct, 75)
-                    
-                    p_pct_est = (p_pct_med / 100.0) * sell_30
-                    p_pct_low_val = (p_pct_low / 100.0) * sell_30
-                    p_pct_high_val = (p_pct_high / 100.0) * sell_30
-                    
-                    st.metric("Estimated Permit Cost", f"${p_pct_est:,.2f}")
-                    st.markdown(f"**Permit % of Contract:** {p_pct_med:.3f}%")
-                    st.markdown(f"**Low / High Range:** \${p_pct_low_val:,.2f} - \${p_pct_high_val:,.2f}")
-                    st.markdown(f"**Data Points Used:** {p_pct_count}")
-                    st.markdown(f"*Based on Sell @ 30% Margin: \${sell_30:,.2f}*")
-                    
-                    permit_export_data = {
-                        "Active": True,
-                        "City": p_city,
-                        "Count": p_count,
-                        "Median $/SQ": p_med,
-                        "Low": p_low * sq,
-                        "Median": p_med * sq,
-                        "High": p_high * sq,
-                        "Contract_Pct_Med": p_pct_med,
-                        "Contract_Low": p_pct_low_val,
-                        "Contract_Median": p_pct_est,
-                        "Contract_High": p_pct_high_val,
-                        "Msg": ""
-                    }
-                else:
-                    st.warning("Insufficient historical contract-value data to estimate by percentage.")
-                    permit_export_data = {
-                        "Active": True,
-                        "City": p_city,
-                        "Count": p_count,
-                        "Median $/SQ": p_med,
-                        "Low": p_low * sq,
-                        "Median": p_med * sq,
-                        "High": p_high * sq,
-                        "Msg": "Insufficient contract-value data"
-                    }
-            
-        else:
-            st.error("Insufficient permit data for this city.")
-            st.markdown(f"**Data Points Found:** {p_count} (Minimum Required: 3)")
-            permit_export_data = {"Active": False, "City": p_city, "Count": p_count, "Msg": "Insufficient data"}
-            if p_city != "All Cities" and len(df_permit) >= 3:
-                p_med_all = np.median(df_permit["Permit Cost/SQ"])
-                st.markdown(f"*All Cities Reference: \${p_med_all * (sample_squares if sample_squares > 0 else 1):,.2f}*")
+    with st.container(border=True):
+        permit_header = st.empty()
+        permit_help = "Permit estimate is based on historical permit cost per square and is intended for budgeting only. Actual permit costs may vary by jurisdiction, project valuation, review fees, and project-specific requirements."
+        permit_header.markdown("#### Permit Cost Estimator", help=permit_help)
+        if not df_permit.empty:
+            permit_cities = ["All Cities"] + sorted([c for c in df_permit["City"].dropna().unique() if str(c).strip() != ""])
+            permit_counts = df_permit["City"].dropna().astype(str).str.strip().value_counts().to_dict()
+            total_permit_count = len(df_permit)
+
+            def format_permit_city(city_opt):
+                if city_opt == "All Cities":
+                    return f"All Cities ({total_permit_count})"
+                count = permit_counts.get(city_opt, 0)
+                return f"{city_opt} ({count})"
+
+            if print_mode:
+                p_city = st.session_state.get('permit_city', 'All Cities')
+                st.markdown(f"**Permit City:** {format_permit_city(p_city)}")
+            else:
+                p_city = st.selectbox("Permit City", permit_cities, key="permit_city", format_func=format_permit_city)
+
+            pdf = df_permit if p_city == "All Cities" else df_permit[df_permit["City"].astype(str).str.strip() == p_city]
+            p_count = len(pdf)
+
+            if p_count >= 3:
+                p_low = np.percentile(pdf["Permit Cost/SQ"], 25)
+                p_med = np.median(pdf["Permit Cost/SQ"])
+                p_high = np.percentile(pdf["Permit Cost/SQ"], 75)
                 
-        st.info("Permit estimate is based on historical permit cost per square and is intended for budgeting only. Actual permit costs may vary by jurisdiction, project valuation, review fees, and project-specific requirements.")
-    else:
-        st.warning("No valid permit data found in historical dataset.")
-        permit_export_data = {"Active": False, "City": "N/A", "Count": 0, "Msg": "No valid data"}
+                permit_header.markdown("#### Permit Cost Estimator", help=permit_help)
+                
+
+                sq = sample_squares if sample_squares > 0 else 1
+
+                # 1. Square-Based Estimate
+                tab1, tab2 = st.tabs(["Square-Based", "Contract-Based"])
+
+                with tab1:
+                    st.metric("Estimated Permit Cost", f"${p_med * sq:,.2f}")
+                    st.markdown(f"**Permit \\$/SQ:** \${p_med:,.2f}/SQ")
+                    st.markdown(f"**Low / High Range:** \${p_low * sq:,.2f} - \${p_high * sq:,.2f}")
+                    st.markdown(f"**Data Points Used:** {p_count}")
+
+                # 2. Contract-Based Estimate
+                pdf_pct = pdf["Permit % of Contract"].dropna()
+                p_pct_count = len(pdf_pct)
+
+                with tab2:
+                    if p_pct_count >= 3 and sell_30 > 0:
+                        p_pct_low = np.percentile(pdf_pct, 25)
+                        p_pct_med = np.median(pdf_pct)
+                        p_pct_high = np.percentile(pdf_pct, 75)
+
+                        p_pct_est = (p_pct_med / 100.0) * sell_30
+                        p_pct_low_val = (p_pct_low / 100.0) * sell_30
+                        p_pct_high_val = (p_pct_high / 100.0) * sell_30
+
+                        st.metric("Estimated Permit Cost", f"${p_pct_est:,.2f}")
+                        st.markdown(f"**Permit % of Contract:** {p_pct_med:.3f}%")
+                        st.markdown(f"**Low / High Range:** \${p_pct_low_val:,.2f} - \${p_pct_high_val:,.2f}")
+                        st.markdown(f"**Data Points Used:** {p_pct_count}")
+                        st.markdown(f"*Based on Sell @ 30% Margin: \${sell_30:,.2f}*")
+
+                        permit_export_data = {
+                            "Active": True,
+                            "City": p_city,
+                            "Count": p_count,
+                            "Median $/SQ": p_med,
+                            "Low": p_low * sq,
+                            "Median": p_med * sq,
+                            "High": p_high * sq,
+                            "Contract_Pct_Med": p_pct_med,
+                            "Contract_Low": p_pct_low_val,
+                            "Contract_Median": p_pct_est,
+                            "Contract_High": p_pct_high_val,
+                            "Msg": ""
+                        }
+                    else:
+                        st.warning("Insufficient historical contract-value data to estimate by percentage.")
+                        permit_export_data = {
+                            "Active": True,
+                            "City": p_city,
+                            "Count": p_count,
+                            "Median $/SQ": p_med,
+                            "Low": p_low * sq,
+                            "Median": p_med * sq,
+                            "High": p_high * sq,
+                            "Msg": "Insufficient contract-value data"
+                        }
+
+            else:
+                st.error("Insufficient permit data for this city.")
+                st.markdown(f"**Data Points Found:** {p_count} (Minimum Required: 3)")
+                permit_export_data = {"Active": False, "City": p_city, "Count": p_count, "Msg": "Insufficient data"}
+                if p_city != "All Cities" and len(df_permit) >= 3:
+                    p_med_all = np.median(df_permit["Permit Cost/SQ"])
+                    st.markdown(f"*All Cities Reference: \${p_med_all * (sample_squares if sample_squares > 0 else 1):,.2f}*")
+
+        else:
+            st.warning("No valid permit data found in historical dataset.")
+            permit_export_data = {"Active": False, "City": "N/A", "Count": 0, "Msg": "No valid data"}
 
 # DISPOSAL ESTIMATOR
 disposal_export_data = {}
 with col_disp:
-    st.markdown("#### Disposal Cost Estimator")
-    if spec_type not in ["Tear-Off", "Tear Off", "TO"] and not (is_master and spec_type == "All"):
-        st.info("Disposal estimator is only available when Spec Type is Tear-Off.")
-        disposal_export_data = {"Active": False, "Msg": "Inactive (Spec Type is not Tear-Off)"}
-    else:
-        if not df_disposal.empty:
-            disp_cities = ["All Cities"] + sorted([c for c in df_disposal["City"].dropna().unique() if str(c).strip() != ""])
-            disposal_counts = df_disposal["City"].dropna().astype(str).str.strip().value_counts().to_dict()
-            total_disposal_count = len(df_disposal)
-            
-            def format_disposal_city(city_opt):
-                if city_opt == "All Cities":
-                    return f"All Cities ({total_disposal_count})"
-                count = disposal_counts.get(city_opt, 0)
-                return f"{city_opt} ({count})"
-                
-            d_city = st.selectbox("Disposal City", disp_cities, key="disp_city", format_func=format_disposal_city)
-            
-            user_weight_psf = st.number_input("Estimated Roof Weight (psf)", value=2.0, step=0.5, key="disp_weight")
-            sq = sample_squares if sample_squares > 0 else 1
-            est_total_tons = (user_weight_psf * sq * 100) / 2000
-            
-            ddf = df_disposal if d_city == "All Cities" else df_disposal[df_disposal["City"].astype(str).str.strip() == d_city]
-            d_count = len(ddf)
-            
-            if d_count >= 3:
-                d_low = np.percentile(ddf["Disposal Cost/SQ"], 25)
-                d_med = np.median(ddf["Disposal Cost/SQ"])
-                d_high = np.percentile(ddf["Disposal Cost/SQ"], 75)
-                
-                ddf_tons = ddf[ddf["Total Tons"] > 0]
-                t_count = len(ddf_tons)
-                has_ton_data = t_count >= 3
-                
-                tab1, tab2 = st.tabs(["Weight-Based", "Square-Based"])
-                
-                with tab1:
-                    if user_weight_psf > 0 and has_ton_data:
-                        t_low = np.percentile(ddf_tons["Disposal Cost/Ton"], 25)
-                        t_med = np.median(ddf_tons["Disposal Cost/Ton"])
-                        t_high = np.percentile(ddf_tons["Disposal Cost/Ton"], 75)
-                        
-                        st.metric("Estimated Disposal Cost", f"${t_med * est_total_tons:,.2f}")
-                        st.markdown(f"**Disposal \\$/Ton:** \${t_med:,.2f}/Ton")
-                        st.markdown(f"**Estimated Tonnage:** {est_total_tons:,.1f} Tons")
-                        st.markdown(f"**Data Points Used:** {t_count}")
-                    elif user_weight_psf > 0 and not has_ton_data:
-                        st.warning("Insufficient historical weight data to estimate by tonnage.")
-                    else:
-                        st.info("Enter estimated roof weight to calculate tonnage.")
-                
-                with tab2:
-                    st.metric("Estimated Disposal Cost", f"${d_med * sq:,.2f}")
-                    st.markdown(f"**Disposal \\$/SQ:** \${d_med:,.2f}/SQ")
-                    st.markdown(f"**Low / High Range:** \${d_low * sq:,.2f} - \${d_high * sq:,.2f}")
-                    st.markdown(f"**Data Points Used:** {d_count}")
-                
-                disposal_export_data = {
-                    "Active": True,
-                    "City": d_city,
-                    "Count": d_count,
-                    "Median $/SQ": d_med,
-                    "Low": d_low * sq,
-                    "Median": d_med * sq,
-                    "High": d_high * sq,
-                    "Msg": ""
-                }
-                if user_weight_psf > 0 and has_ton_data:
-                    disposal_export_data["Estimated Tons"] = est_total_tons
-                    disposal_export_data["Median $/Ton"] = t_med
-                    disposal_export_data["Weight-Based Total"] = t_med * est_total_tons
-            else:
-                st.error("Insufficient disposal data for this city.")
-                st.markdown(f"**Data Points Found:** {d_count} (Minimum Required: 3)")
-                disposal_export_data = {"Active": False, "City": d_city, "Count": d_count, "Msg": "Insufficient data"}
-                
-                if d_city != "All Cities" and len(df_disposal) >= 3:
-                    d_med_all = np.median(df_disposal["Disposal Cost/SQ"])
-                    st.markdown(f"*All Cities Reference: \${d_med_all * (sample_squares if sample_squares > 0 else 1):,.2f}*")
-                    
-            st.info("Disposal estimate is based only on historical Tear-Off projects with recorded disposal costs and is intended for budgeting only. Actual disposal costs may vary based on debris type, dump fees, access, trucking, and hazardous material conditions.")
+    with st.container(border=True):
+        disp_header = st.empty()
+        disp_help = "Disposal estimate is based only on historical Tear-Off projects with recorded disposal costs and is intended for budgeting only. Actual disposal costs may vary based on debris type, dump fees, access, trucking, and hazardous material conditions."
+        disp_header.markdown("#### Disposal Cost Estimator", help=disp_help)
+        if spec_type not in ["Tear-Off", "Tear Off", "TO"] and not (is_master and spec_type == "All"):
+            st.info("Disposal estimator is only available when Spec Type is Tear-Off.")
+            disposal_export_data = {"Active": False, "Msg": "Inactive (Spec Type is not Tear-Off)"}
         else:
-            st.warning("No valid disposal data found in historical dataset.")
-            disposal_export_data = {"Active": False, "Msg": "No valid data"}
+            if not df_disposal.empty:
+                disp_cities = ["All Cities"] + sorted([c for c in df_disposal["City"].dropna().unique() if str(c).strip() != ""])
+                disposal_counts = df_disposal["City"].dropna().astype(str).str.strip().value_counts().to_dict()
+                total_disposal_count = len(df_disposal)
+
+                def format_disposal_city(city_opt):
+                    if city_opt == "All Cities":
+                        return f"All Cities ({total_disposal_count})"
+                    count = disposal_counts.get(city_opt, 0)
+                    return f"{city_opt} ({count})"
+
+                if print_mode:
+                    d_city = st.session_state.get('disp_city', 'All Cities')
+                    st.markdown(f"**Disposal City:** {format_disposal_city(d_city)}")
+                else:
+                    d_city = st.selectbox("Disposal City", disp_cities, key="disp_city", format_func=format_disposal_city)
+                sq = sample_squares if sample_squares > 0 else 1
+
+                ddf = df_disposal if d_city == "All Cities" else df_disposal[df_disposal["City"].astype(str).str.strip() == d_city]
+                d_count = len(ddf)
+
+                if d_count >= 3:
+                    d_low = np.percentile(ddf["Disposal Cost/SQ"], 25)
+                    d_med = np.median(ddf["Disposal Cost/SQ"])
+                    d_high = np.percentile(ddf["Disposal Cost/SQ"], 75)
+                    
+                    disp_header.markdown("#### Disposal Cost Estimator", help=disp_help)
+                
+
+                    ddf_tons = ddf[ddf["Total Tons"] > 0]
+                    t_count = len(ddf_tons)
+                    has_ton_data = t_count >= 3
+
+                    tab1, tab2 = st.tabs(["Square-Based", "Weight-Based"])
+
+                    with tab1:
+                        st.metric("Estimated Disposal Cost", f"${d_med * sq:,.2f}")
+                        st.markdown(f"**Disposal \$/SQ:** \${d_med:,.2f}/SQ")
+                        st.markdown(f"**Low / High Range:** \${d_low * sq:,.2f} - \${d_high * sq:,.2f}")
+                        st.markdown(f"**Data Points Used:** {d_count}")
+
+                    with tab2:
+                        if print_mode:
+                            user_weight_psf = st.session_state.get('disp_weight', 2.0)
+                            st.markdown(f"**Estimated Roof Weight:** {user_weight_psf} psf")
+                        else:
+                            user_weight_psf = st.number_input("Estimated Roof Weight (psf)", value=2.0, step=0.5, key="disp_weight")
+                        est_total_tons = (user_weight_psf * sq * 100) / 2000
+                        
+                        if user_weight_psf > 0 and has_ton_data:
+                            t_low = np.percentile(ddf_tons["Disposal Cost/Ton"], 25)
+                            t_med = np.median(ddf_tons["Disposal Cost/Ton"])
+                            t_high = np.percentile(ddf_tons["Disposal Cost/Ton"], 75)
+
+                            st.metric("Estimated Disposal Cost", f"${t_med * est_total_tons:,.2f}")
+                            st.markdown(f"**Disposal \$/Ton:** \${t_med:,.2f}/Ton")
+                            st.markdown(f"**Estimated Tonnage:** {est_total_tons:,.1f} Tons")
+                            st.markdown(f"**Data Points Used:** {t_count}")
+                        elif user_weight_psf > 0 and not has_ton_data:
+                            st.warning("Insufficient historical weight data to estimate by tonnage.")
+                        else:
+                            st.info("Enter estimated roof weight to calculate tonnage.")
+
+                    disposal_export_data = {
+                        "Active": True,
+                        "City": d_city,
+                        "Count": d_count,
+                        "Median $/SQ": d_med,
+                        "Low": d_low * sq,
+                        "Median": d_med * sq,
+                        "High": d_high * sq,
+                        "Msg": ""
+                    }
+                    if user_weight_psf > 0 and has_ton_data:
+                        disposal_export_data["Estimated Tons"] = est_total_tons
+                        disposal_export_data["Median $/Ton"] = t_med
+                        disposal_export_data["Weight-Based Total"] = t_med * est_total_tons
+                else:
+                    st.error("Insufficient disposal data for this city.")
+                    st.markdown(f"**Data Points Found:** {d_count} (Minimum Required: 3)")
+                    disposal_export_data = {"Active": False, "City": d_city, "Count": d_count, "Msg": "Insufficient data"}
+
+                    if d_city != "All Cities" and len(df_disposal) >= 3:
+                        d_med_all = np.median(df_disposal["Disposal Cost/SQ"])
+                        st.markdown(f"*All Cities Reference: \${d_med_all * (sample_squares if sample_squares > 0 else 1):,.2f}*")
+
+            else:
+                st.warning("No valid disposal data found in historical dataset.")
+                disposal_export_data = {"Active": False, "Msg": "No valid data"}
 
 # FUEL ESTIMATOR
 fuel_export_data = {}
 with col_fuel:
-    st.markdown("#### Fuel Cost Estimator")
-    if not df_fuel.empty:
-        fuel_cities = ["All Cities"] + sorted([c for c in df_fuel["City"].dropna().unique() if str(c).strip() != ""])
-        fuel_counts = df_fuel["City"].dropna().astype(str).str.strip().value_counts().to_dict()
-        total_fuel_count = len(df_fuel)
-        
-        def format_fuel_city(city_opt):
-            if city_opt == "All Cities":
-                return f"All Cities ({total_fuel_count})"
-            count = fuel_counts.get(city_opt, 0)
-            return f"{city_opt} ({count})"
-            
-        f_city = st.selectbox("Fuel City", fuel_cities, key="fuel_city", format_func=format_fuel_city)
-        
-        fdf = df_fuel if f_city == "All Cities" else df_fuel[df_fuel["City"].astype(str).str.strip() == f_city]
-        f_count = len(fdf)
-        
-        if f_count >= 3:
-            f_low = np.percentile(fdf["Fuel Cost/MD"], 25)
-            f_med = np.median(fdf["Fuel Cost/MD"])
-            f_high = np.percentile(fdf["Fuel Cost/MD"], 75)
-            
-            st.metric("Estimated Fuel Cost", f"${f_med * est_md:,.2f}")
-            st.markdown(f"**Fuel \\$/MD:** \${f_med:,.2f}/MD")
-            st.markdown(f"**Low / High Range:** \${f_low * est_md:,.2f} - \${f_high * est_md:,.2f}")
-            st.markdown(f"**Estimated Man Days:** {est_md:,.2f} MD")
-            st.markdown(f"**Data Points Used:** {f_count}")
-            
-            fuel_export_data = {
-                "Active": True,
-                "City": f_city,
-                "Count": f_count,
-                "Median $/MD": f_med,
-                "Low": f_low * est_md,
-                "Median": f_med * est_md,
-                "High": f_high * est_md,
-                "Msg": ""
-            }
-            
-            if f_city != "All Cities":
-                city_zone = get_zone(f_city)
-                if city_zone != "Unzoned":
-                    zone_df = df_fuel[df_fuel["Zone"] == city_zone]
-                    if len(zone_df) >= 3:
-                        z_med = np.median(zone_df["Fuel Cost/MD"])
-                        st.markdown(f"*Secondary Metric: {f_city} is in **{city_zone}**. The historical median for this zone is **\${z_med:,.2f}/MD**.*")
-                        fuel_export_data["Zone"] = city_zone
-                        fuel_export_data["Zone_Med"] = z_med
-        else:
-            st.error("Insufficient fuel data for this city.")
-            st.markdown(f"**Data Points Found:** {f_count} (Minimum Required: 3)")
-            fuel_export_data = {"Active": False, "City": f_city, "Count": f_count, "Msg": "Insufficient data"}
-            
-            if f_city != "All Cities":
-                city_zone = get_zone(f_city)
-                if city_zone != "Unzoned":
-                    zone_df = df_fuel[df_fuel["Zone"] == city_zone]
-                    if len(zone_df) >= 3:
-                        z_med = np.median(zone_df["Fuel Cost/MD"])
-                        st.markdown(f"*Zone Reference: {f_city} is in **{city_zone}**. The historical median for this zone is **\${z_med:,.2f}/MD** (\${z_med * est_md:,.2f}).*")
-                        fuel_export_data["Zone"] = city_zone
-                        fuel_export_data["Zone_Med"] = z_med
-                elif len(df_fuel) >= 3:
-                    f_med_all = np.median(df_fuel["Fuel Cost/MD"])
-                    st.markdown(f"*All Cities Reference: \${f_med_all * est_md:,.2f}*")
+    with st.container(border=True):
+        fuel_header = st.empty()
+        fuel_header.markdown("#### Fuel Cost Estimator", help="Fuel estimate is based on historical fuel cost per Man Day. Fuel costs fluctuate significantly with macroeconomic gas prices and distance to the job site.")
+        if not df_fuel.empty:
+            fuel_cities = ["All Cities"] + sorted([c for c in df_fuel["City"].dropna().unique() if str(c).strip() != ""])
+            fuel_counts = df_fuel["City"].dropna().astype(str).str.strip().value_counts().to_dict()
+            total_fuel_count = len(df_fuel)
+
+            def format_fuel_city(city_opt):
+                if city_opt == "All Cities":
+                    return f"All Cities ({total_fuel_count})"
+                count = fuel_counts.get(city_opt, 0)
+                return f"{city_opt} ({count})"
+
+            if print_mode:
+                f_city = st.session_state.get('fuel_city', 'All Cities')
+                st.markdown(f"**Fuel City:** {format_fuel_city(f_city)}")
+            else:
+                f_city = st.selectbox("Fuel City", fuel_cities, key="fuel_city", format_func=format_fuel_city)
+
+            fdf = df_fuel if f_city == "All Cities" else df_fuel[df_fuel["City"].astype(str).str.strip() == f_city]
+            f_count = len(fdf)
+
+            if f_count >= 3:
+                f_low = np.percentile(fdf["Fuel Cost/MD"], 25)
+                f_med = np.median(fdf["Fuel Cost/MD"])
+                f_high = np.percentile(fdf["Fuel Cost/MD"], 75)
                 
-        st.info("Fuel estimate is based on historical fuel cost per Man Day. Fuel costs fluctuate significantly with macroeconomic gas prices and distance to the job site.")
-    else:
-        st.warning("No valid fuel data found in historical dataset.")
-        fuel_export_data = {"Active": False, "Msg": "No valid data"}
+                fuel_header.markdown("#### Fuel Cost Estimator", help="Fuel estimate is based on historical fuel cost per Man Day. Fuel costs fluctuate significantly with macroeconomic gas prices and distance to the job site.")
+
+                st.metric("Estimated Fuel Cost", f"${f_med * est_md:,.2f}")
+                st.markdown(f"**Fuel \$/MD:** \${f_med:,.2f}/MD")
+                st.markdown(f"**Low / High Range:** \${f_low * est_md:,.2f} - \${f_high * est_md:,.2f}")
+                st.markdown(f"**Estimated Man Days:** {est_md:,.2f} MD")
+                st.markdown(f"**Data Points Used:** {f_count}")
+
+                fuel_export_data = {
+                    "Active": True,
+                    "City": f_city,
+                    "Count": f_count,
+                    "Median $/MD": f_med,
+                    "Low": f_low * est_md,
+                    "Median": f_med * est_md,
+                    "High": f_high * est_md,
+                    "Msg": ""
+                }
+
+                if f_city != "All Cities":
+                    city_zone = get_zone(f_city)
+                    if city_zone != "Unzoned":
+                        zone_df = df_fuel[df_fuel["Zone"] == city_zone]
+                        if len(zone_df) >= 3:
+                            z_med = np.median(zone_df["Fuel Cost/MD"])
+                            st.markdown(f"*Secondary Metric: {f_city} is in **{city_zone}**. The historical median for this zone is **\${z_med:,.2f}/MD**.*")
+                            fuel_export_data["Zone"] = city_zone
+                            fuel_export_data["Zone_Med"] = z_med
+                        elif len(df_fuel) >= 3:
+                            f_med_all = np.median(df_fuel["Fuel Cost/MD"])
+                            st.markdown(f"*Secondary Metric: Insufficient zone data. The global median is **\${f_med_all:,.2f}/MD**.*")
+
+            else:
+                st.error("Insufficient fuel data for this city.")
+                st.markdown(f"**Data Points Found:** {f_count} (Minimum Required: 3)")
+                fuel_export_data = {"Active": False, "City": f_city, "Count": f_count, "Msg": "Insufficient data"}
+
+                if f_city != "All Cities" and len(df_fuel) >= 3:
+                    f_med_all = np.median(df_fuel["Fuel Cost/MD"])
+
+                    city_zone = get_zone(f_city)
+                    if city_zone != "Unzoned":
+                        zone_df = df_fuel[df_fuel["Zone"] == city_zone]
+                        if len(zone_df) >= 3:
+                            z_med = np.median(zone_df["Fuel Cost/MD"])
+                            st.markdown(f"*Fallback: {f_city} is in **{city_zone}** (\${z_med:,.2f}/MD).*")
+                            fuel_export_data["Zone"] = city_zone
+                            fuel_export_data["Zone_Med"] = z_med
+                    elif len(df_fuel) >= 3:
+                        f_med_all = np.median(df_fuel["Fuel Cost/MD"])
+                        st.markdown(f"*Fallback: Global median is **\${f_med_all:,.2f}/MD**.*")
+
+        else:
+            st.warning("No valid fuel data found in historical dataset.")
+            fuel_export_data = {"Active": False, "Msg": "No valid data"}
 
 # Quick Reference Estimate
 if tier_used != "Tier 4 (Global Fallback)":
@@ -1598,236 +1828,177 @@ if tier_used != "Tier 4 (Global Fallback)":
     st.header("Quick Reference Estimate")
     
     q1, q2, q3 = st.columns(3)
-    q1.metric("Estimated Type G Cost", f"${expected_type_g:,.2f}", f"${type_g_med_sq:,.2f}/SQ")
-    q2.metric("Estimated Type L / Labor Cost", f"${est_labor_cost:,.2f}", f"${est_labor_cost/sq_val:,.2f}/SQ")
-    q3.metric("Estimated Type M / Material Cost", f"${expected_mats:,.2f}", f"${mats_med_sq:,.2f}/SQ")
+    
+    type_g_stats = get_rate_stats("Type G Total")
+    type_m_stats = get_rate_stats("Type M Total")
+    
+    def render_qref_card(col, title, expected_cost, expected_sq, stat_dict, is_labor=False):
+        with col:
+            with st.container(border=True):
+                # Badge Header
+                st.markdown(f'''
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <h4 style="margin: 0; padding: 0;">{title}</h4>
+                    <div style="background-color: {stat_dict["color"]}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600;">
+                        {stat_dict["label"]}
+                    </div>
+                </div>
+                ''', unsafe_allow_html=True)
+                
+                # Metrics
+                st.metric("Estimated Cost", f"${expected_cost:,.2f}", f"${expected_sq:,.2f}/SQ", label_visibility="collapsed")
+                
+                # Low High Range
+                if is_labor:
+                    st.markdown(f"**Low / High Range:** \${stat_dict['low_cost_sq']:,.2f} - \${stat_dict['high_cost_sq']:,.2f}")
+                else:
+                    st.markdown(f"**Low / High Range:** \${stat_dict['low']:,.2f} - \${stat_dict['high']:,.2f}")
+                    
+    sq_val = sample_squares if sample_squares > 0 else 1
+    
+    render_qref_card(q1, "Type G Cost", expected_type_g, type_g_med_sq, type_g_stats)
+    render_qref_card(q2, "Type L Cost", est_labor_cost, est_labor_cost/sq_val, labor_stats, is_labor=True)
+    render_qref_card(q3, "Type M Cost", expected_mats, mats_med_sq, type_m_stats)
     
 
+st.markdown("<br>", unsafe_allow_html=True)
+st.header("Labor Productivity Expanded")
+st.markdown("*Historical roof-system productivity metrics (Squares per Man Day) vs Your Projection.*")
+
+p_col1, p_col2 = st.columns([1, 2])
+
+with p_col1:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.metric("Estimated Productivity", f"{weighted_sq_md:,.2f} SQ/MD")
+    st.markdown("##### Historical Ranges")
+    st.markdown(f"**Conservative (25th):** {sq_md_low:,.2f}")
+    st.markdown(f"**Expected (50th):** {sq_md_med:,.2f}")
+    st.markdown(f"**Aggressive (75th):** {sq_md_high:,.2f}")
+
+with p_col2:
+    if sq_md_high > 0:
+        fig = go.Figure(go.Indicator(
+            mode = "gauge+number",
+            value = weighted_sq_md,
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': "Projected Productivity (SQ/MD)"},
+            gauge = {
+                'axis': {'range': [None, sq_md_high * 1.5], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                'bar': {'color': "rgba(0,0,0,0.8)", 'thickness': 0.25},
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
+                'steps': [
+                    {'range': [0, sq_md_low], 'color': '#ffc107'}, 
+                    {'range': [sq_md_low, sq_md_high], 'color': '#28a745'},
+                    {'range': [sq_md_high, sq_md_high * 1.5], 'color': '#17a2b8'}
+                ],
+                'threshold': {
+                    'line': {'color': "black", 'width': 4},
+                    'thickness': 0.75,
+                    'value': sq_md_med
+                }
+            }
+        ))
+        fig.update_layout(margin=dict(l=20, r=20, t=50, b=20), height=300)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Not enough historical data to generate productivity gauge.")
+
+st.markdown("---")
 st.header("Main Benchmark Results")
 
-layout_style = st.radio(
-    "Benchmark Layout Style", 
-    ["New KPI Tabs (Compact)", "Classic View (Detailed)"], 
-    horizontal=True,
-    help="Toggle between the new tabbed layout and the classic side-by-side layout."
-)
-
-if layout_style == "Classic View (Detailed)":
-    viewA, viewB = st.columns(2)
-    
-    with viewA:
-        st.subheader("View A: Historical Cost Benchmark")
-        st.markdown("*Historical roof-system benchmark excluding scaffold and specialty items.*")
-        st.metric("Historical Low Benchmark Total", f"${cps_low * sample_squares:,.2f}")
-        st.metric("Historical Median Benchmark Total", f"${cps_med * sample_squares:,.2f}")
-        st.metric("Historical High Benchmark Total", f"${cps_high * sample_squares:,.2f}")
-        
-        st.markdown("#### Direct Cost/SQ")
-        st.markdown(f"**Low:** \${cps_low:,.2f} | **Median:** \${cps_med:,.2f} | **High:** \${cps_high:,.2f}")
-    
-    with viewB:
-        st.subheader("View B: Current-Rate Projection")
-        st.markdown("*Historical roof-system productivity and cleaned cost patterns priced with today's labor rate.*")
-        if tier_used == "Tier 4 (Global Fallback)":
-            st.error("Broad reference only — not reliable for estimating.")
-        else:
-            st.metric("Current-Rate Projected Direct Cost Total", f"${view_b_direct_cost:,.2f}")
-            st.metric("Current-Rate Projected Direct Cost/SQ", f"${(view_b_direct_cost/sample_squares) if sample_squares>0 else 0:,.2f}")
-            st.markdown(f"**Expected Type G:** \${expected_type_g:,.2f} | **Expected Labor:** \${est_labor_cost:,.2f} | **Expected Materials:** \${expected_mats:,.2f}")
-    
-    # Labor Rate Context
-    st.markdown("---")
-    st.header("Labor Rate Context")
-    hist_labor_rates = []
-    for j in valid_labor_jobs:
-        l = float(j.get("Total Labor", 0))
-        md = float(j.get("Estimator MD", 0))
-        if md > 0:
-            hist_labor_rates.append(l / md)
-    median_hist_labor_rate = np.median(hist_labor_rates) if hist_labor_rates else 0.0
-    
-    st.markdown(f"**Median Historical Labor:** \${median_hist_labor_rate:,.2f}/MD | **Your Selected Rate:** \${labor_rate:,.2f}/MD")
-    labor_diff = labor_rate - median_hist_labor_rate
-    labor_diff_pct = (labor_diff / median_hist_labor_rate) * 100 if median_hist_labor_rate > 0 else 0
-    st.markdown(f"**Difference:** \${labor_diff:,.2f} ({labor_diff_pct:+.2f}%)")
-    
-    if abs(labor_diff_pct) > 25:
-        st.info("💡 **Note:** Your selected labor rate differs significantly from the historical labor rate in this comparable set. Current-rate projection may differ from the historical benchmark primarily because of labor-rate normalization.")
-
+# Pricing Tiers
+if tier_used == "Tier 4 (Global Fallback)":
+    st.error("Broad reference only — not reliable for estimating.")
 else:
-    tab_hist, tab_prod, tab_proj = st.tabs([
-        "📚 Historical Raw Data", 
-        "👷 Productivity Context (SQ/MD)",
-        "📊 Current-Rate Projection"
-    ])
+    proj_total_low = (type_g_stats["low"] * sample_squares) + (labor_stats["low_cost_sq"] * sample_squares) + (type_m_stats["low"] * sample_squares)
+    proj_total_med = expected_type_g + est_labor_cost + expected_mats
+    proj_total_high = (type_g_stats["high"] * sample_squares) + (labor_stats["high_cost_sq"] * sample_squares) + (type_m_stats["high"] * sample_squares)
     
-    with tab_hist:
-        c1, c2, c3 = st.columns([1, 1.2, 1.5])
-        with c1:
-            st.metric("Historical Median Benchmark Total", f"${cps_med * sample_squares:,.2f}")
-            st.metric("Median Direct Cost/SQ", f"${cps_med:,.2f}")
-        with c2:
-            st.markdown("##### Historical Ranges (Cost/SQ)")
-            st.markdown(f"**Low (25th):** \${cps_low:,.2f}")
-            st.markdown(f"**Median (50th):** \${cps_med:,.2f}")
-            st.markdown(f"**High (75th):** \${cps_high:,.2f}")
-        with c3:
-            st.markdown("##### Data Quality")
-            cps_spread = cps_high - cps_low
-            cps_spread_pct = (cps_spread / cps_med) * 100 if cps_med > 0 else 0
+    sq_safe = sample_squares if sample_squares > 0 else 1
+    
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        with st.container(border=True):
+            st.markdown("<h4 style='color: #fd7e14; margin-bottom: 5px; font-size: 1.1rem;'>Aggressive (25th)</h4>", unsafe_allow_html=True)
+            st.metric("Total Estimate", f"${proj_total_low:,.2f}", f"${proj_total_low/sq_safe:,.2f}/SQ", label_visibility="collapsed")
+    with c2:
+        with st.container(border=True):
+            st.markdown("<h4 style='color: #28a745; margin-bottom: 5px; font-size: 1.25rem;'>Expected (50th)</h4>", unsafe_allow_html=True)
+            st.metric("Total Estimate", f"${proj_total_med:,.2f}", f"${proj_total_med/sq_safe:,.2f}/SQ", label_visibility="collapsed")
+    with c3:
+        with st.container(border=True):
+            st.markdown("<h4 style='color: #007bff; margin-bottom: 5px; font-size: 1.1rem;'>Conservative (75th)</h4>", unsafe_allow_html=True)
+            st.metric("Total Estimate", f"${proj_total_high:,.2f}", f"${proj_total_high/sq_safe:,.2f}/SQ", label_visibility="collapsed")
             
-            if cps_spread_pct < 20:
-                q_label = "Excellent"
-                q_color = "#28a745"
-            elif cps_spread_pct < 40:
-                q_label = "Good"
-                q_color = "#e0a800"
-            elif cps_spread_pct < 70:
-                q_label = "Fair"
-                q_color = "#fd7e14"
-            else:
-                q_label = "Poor"
-                q_color = "#dc3545"
-                
-            marker_pos = min(cps_spread_pct, 100)
-            
-            bar_html = f"""
-            <div style="padding: 15px 15px 20px 15px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef; margin-top: 5px;">
-                <div style="display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 12px;">
-                    <span style="color: #495057;">Variance: <strong>{cps_spread_pct:.1f}%</strong></span>
-                    <span style="color: {q_color}; font-weight: 600;">{q_label} Confidence</span>
-                </div>
-                <div style="position: relative; width: 100%; height: 12px; background: linear-gradient(to right, #28a745 20%, #ffc107 40%, #fd7e14 70%, #dc3545 100%); border-radius: 6px;">
-                    <div style="position: absolute; top: -6px; bottom: -6px; left: {marker_pos}%; width: 4px; background-color: #212529; border: 2px solid white; border-radius: 3px; transform: translateX(-50%); box-shadow: 0 0 4px rgba(0,0,0,0.4);"></div>
-                </div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #6c757d; margin-top: 8px;">
-                    <span>0% (Tight)</span>
-                    <span>100%+ (Wide)</span>
-                </div>
-            </div>
-            """
-            st.markdown(bar_html, unsafe_allow_html=True)
-        st.caption("*Historical roof-system benchmark excluding scaffold and specialty items.*")
-            
-    with tab_prod:
-        sqmd_vals = []
-        for j in valid_labor_jobs:
-            try:
-                sqmd = float(j.get("SQ/MD", 0))
-                if sqmd > 0: sqmd_vals.append(sqmd)
-            except: pass
-            
-        if sqmd_vals:
-            sqmd_low = np.percentile(sqmd_vals, 25)
-            sqmd_med = np.median(sqmd_vals)
-            sqmd_high = np.percentile(sqmd_vals, 75)
-        else:
-            sqmd_low = sqmd_med = sqmd_high = 0.0
-            
-        c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
-        with c1:
-            st.metric("Weighted Average SQ/MD", f"{weighted_sq_md:,.2f}")
-            st.metric("Median SQ/MD", f"{sqmd_med:,.2f}")
-        with c2:
-            st.markdown("##### Historical Ranges")
-            st.markdown(f"**Low (25th):** {sqmd_low:,.2f}")
-            st.markdown(f"**Median (50th):** {sqmd_med:,.2f}")
-            st.markdown(f"**High (75th):** {sqmd_high:,.2f}")
-        with c3:
-            st.markdown("##### Productivity Reliability")
-            sqmd_spread_val = sqmd_high - sqmd_low
-            sqmd_spread_pct = (sqmd_spread_val / sqmd_med) * 100 if sqmd_med > 0 else 0
-            
-            if sqmd_spread_pct < 20:
-                sqmd_quality_label = "Excellent"
-                sqmd_q_color = "#28a745"
-            elif sqmd_spread_pct < 40:
-                sqmd_quality_label = "Good"
-                sqmd_q_color = "#e0a800"
-            elif sqmd_spread_pct < 70:
-                sqmd_quality_label = "Fair"
-                sqmd_q_color = "#fd7e14"
-            else:
-                sqmd_quality_label = "Poor"
-                sqmd_q_color = "#dc3545"
-                
-            sqmd_marker_pos = min(sqmd_spread_pct, 100)
-            
-            sqmd_bar_html = f"""
-            <div style="padding: 15px 15px 20px 15px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef; margin-top: 5px;">
-                <div style="display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 12px;">
-                    <span style="color: #495057;">Variance: <strong>{sqmd_spread_pct:.1f}%</strong></span>
-                    <span style="color: {sqmd_q_color}; font-weight: 600;">{sqmd_quality_label} Confidence</span>
-                </div>
-                <div style="position: relative; width: 100%; height: 12px; background: linear-gradient(to right, #28a745 20%, #ffc107 40%, #fd7e14 70%, #dc3545 100%); border-radius: 6px;">
-                    <div style="position: absolute; top: -6px; bottom: -6px; left: {sqmd_marker_pos}%; width: 4px; background-color: #212529; border: 2px solid white; border-radius: 3px; transform: translateX(-50%); box-shadow: 0 0 4px rgba(0,0,0,0.4);"></div>
-                </div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #6c757d; margin-top: 8px;">
-                    <span>0% (Tight)</span>
-                    <span>100%+ (Wide)</span>
-                </div>
-            </div>
-            """
-            st.markdown(sqmd_bar_html, unsafe_allow_html=True)
-            
-        st.caption("*Historical roof-system productivity metrics (Squares per Man Day).*")
+    # Data Quality Footer
+    cps_spread = cps_high - cps_low
+    cps_spread_pct = (cps_spread / cps_med) * 100 if cps_med > 0 else 0
+    
+    if cps_spread_pct < 20:
+        q_label = "Excellent"
+        q_color = "#28a745"
+    elif cps_spread_pct < 40:
+        q_label = "Good"
+        q_color = "#e0a800"
+    elif cps_spread_pct < 70:
+        q_label = "Fair"
+        q_color = "#fd7e14"
+    else:
+        q_label = "Poor"
+        q_color = "#dc3545"
         
-    with tab_proj:
-        if tier_used == "Tier 4 (Global Fallback)":
-            st.error("Broad reference only — not reliable for estimating.")
-        else:
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.metric("Projected Direct Cost Total", f"${view_b_direct_cost:,.2f}")
-                st.metric("Projected Direct Cost/SQ", f"${(view_b_direct_cost/sample_squares) if sample_squares>0 else 0:,.2f}")
-            with c2:
-                st.markdown("##### Expected Breakdowns")
-                sq_safe = sample_squares if sample_squares > 0 else 1
-                st.markdown(f"**Type G (Indirects):** \${expected_type_g:,.2f} (*\${expected_type_g / sq_safe:,.2f}/SQ*)")
-                st.markdown(f"**Labor (at \${labor_rate:,.0f}/MD):** \${est_labor_cost:,.2f} (*\${est_labor_cost / sq_safe:,.2f}/SQ*)")
-                st.markdown(f"**Materials:** \${expected_mats:,.2f} (*\${expected_mats / sq_safe:,.2f}/SQ*)")
-            st.caption("*Historical roof-system productivity and cleaned cost patterns priced with today's labor rate.*")
-            
-            st.markdown("---")
-            st.markdown("##### 👷 Labor Rate Context")
-            hist_labor_rates = []
-            for j in valid_labor_jobs:
-                l = float(j.get("Total Labor", 0))
-                md = float(j.get("Estimator MD", 0))
-                if md > 0:
-                    hist_labor_rates.append(l / md)
-            median_hist_labor_rate = np.median(hist_labor_rates) if hist_labor_rates else 0.0
-            
-            labor_diff = labor_rate - median_hist_labor_rate
-            labor_diff_pct = (labor_diff / median_hist_labor_rate) * 100 if median_hist_labor_rate > 0 else 0
-            
-            c3, c4, c5 = st.columns(3)
-            c3.metric("Your Selected Rate", f"${labor_rate:,.2f}/MD")
-            c4.metric("Median Historical Labor", f"${median_hist_labor_rate:,.2f}/MD")
-            c5.metric("Difference", f"${labor_diff:,.2f}", f"{labor_diff_pct:+.2f}%" if median_hist_labor_rate > 0 else None, delta_color="inverse")
-            
-            if abs(labor_diff_pct) > 25:
-                st.info("💡 **Note:** Your selected labor rate differs significantly from the historical labor rate in this comparable set. Current-rate projection may differ from the historical benchmark primarily because of labor-rate normalization.")
+    marker_pos = min(cps_spread_pct, 100)
+    
+    bar_html = f"""
+    <div style="padding: 15px 15px 20px 15px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef; margin-top: 5px; margin-bottom: 25px;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 12px;">
+            <span style="color: #495057;">Data Quality Variance: <strong>{cps_spread_pct:.1f}%</strong></span>
+            <span style="color: {q_color}; font-weight: 600;">{q_label} Confidence</span>
+        </div>
+        <div style="position: relative; width: 100%; height: 12px; background: linear-gradient(to right, #28a745 20%, #ffc107 40%, #fd7e14 70%, #dc3545 100%); border-radius: 6px;">
+            <div style="position: absolute; top: -6px; bottom: -6px; left: {marker_pos}%; width: 4px; background-color: #212529; border: 2px solid white; border-radius: 3px; transform: translateX(-50%); box-shadow: 0 0 4px rgba(0,0,0,0.4);"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #6c757d; margin-top: 8px;">
+            <span>0% (Tight)</span>
+            <span>100%+ (Wide)</span>
+        </div>
+    </div>
+    """
+    st.markdown(bar_html, unsafe_allow_html=True)
+    
+    # Expected Breakdowns
+    with smart_expander("Labor Rate Context"):
+
+        hist_labor_rates = []
+        for j in valid_labor_jobs:
+            l = float(j.get("Total Labor", 0))
+            md = float(j.get("Estimator MD", 0))
+            if md > 0:
+                hist_labor_rates.append(l / md)
+        median_hist_labor_rate = np.median(hist_labor_rates) if hist_labor_rates else 0.0
+        
+        labor_diff = labor_rate - median_hist_labor_rate
+        labor_diff_pct = (labor_diff / median_hist_labor_rate) * 100 if median_hist_labor_rate > 0 else 0
+        
+        c3_exp, c4_exp, c5_exp = st.columns(3)
+        c3_exp.metric("Your Selected Rate", f"\${labor_rate:,.2f}/MD")
+        c4_exp.metric("Median Historical Labor", f"\${median_hist_labor_rate:,.2f}/MD")
+        c5_exp.metric("Difference", f"\${labor_diff:,.2f}", f"{labor_diff_pct:+.2f}%" if median_hist_labor_rate > 0 else None, delta_color="inverse")
+        
+        if abs(labor_diff_pct) > 25:
+            st.info("💡 **Note:** Your selected labor rate differs significantly from the historical labor rate in this comparable set.")
+
 
 st.markdown('<div class="print-page-break"></div>', unsafe_allow_html=True)
 st.markdown("---")
 st.header("Comparable Jobs")
 
-# Render Contextual Multiselect Directly Above Tables
-def clear_exclusions():
-    st.session_state["exclude_dropdown"] = []
-
-st.multiselect(
-    "Temporarily exclude comparable jobs from this calculation",
-    options=list(all_jobs_context.keys()),
-    key="exclude_dropdown",
-    help="Select jobs that you know had catastrophic anomalies (bad access, terrible crew) to prevent them from skewing the median."
-)
-
-if st.session_state.get("exclude_dropdown"):
-    excluded_nos = [all_jobs_context.get(lbl, "Unknown") for lbl in st.session_state["exclude_dropdown"]]
-    st.warning(f"Currently excluding {len(st.session_state['exclude_dropdown'])} comparable job(s) from the benchmark calculation: {', '.join(excluded_nos)}")
-    st.button("Clear exclusions", on_click=clear_exclusions)
+# Initialize Session State
+if "excluded_jobs" not in st.session_state:
+    st.session_state["excluded_jobs"] = []
 
 if matched_jobs:
     tier_labels = {
@@ -1840,252 +2011,265 @@ if matched_jobs:
     seen_job_nos = set()
     all_html_tables = []
     
-    for t_level in range(1, active_tier_level + 1):
-        tier_key = f"t{t_level}"
-        raw_tier_jobs = tier_jobs_dict.get(tier_key, [])
-        
-        # Mutually exclusive filter
-        exclusive_jobs = []
-        for j in raw_tier_jobs:
-            jno = j.get("Job#")
-            if jno and jno not in seen_job_nos:
-                j_copy = dict(j)
-                # Stamp the composite Spec Code on every job (all tiers)
-                j_copy["Spec Code"] = build_spec_code(j_copy)
-                exclusive_jobs.append(j_copy)
-                seen_job_nos.add(jno)
+    with smart_expander("Comparable Jobs Data", expanded=False):
+        for t_level in range(1, base_active_tier_level + 1):
+            tier_key = f"t{t_level}"
+            raw_tier_jobs = base_tier_jobs_dict.get(tier_key, [])
+            
+            # Mutually exclusive filter
+            exclusive_jobs = []
+            for j in raw_tier_jobs:
+                jno = j.get("Job#")
+                if jno and jno not in seen_job_nos:
+                    j_copy = dict(j)
+                    j_copy["Spec Code"] = build_spec_code(j_copy)
+                    exclusive_jobs.append(j_copy)
+                    seen_job_nos.add(jno)
+                    
+            if not exclusive_jobs:
+                continue
                 
-        # Calculate medians for this specific tier table
-        tier_sq_md_vals = []
-        tier_cost_sq_vals = []
-        for j in exclusive_jobs:
-            try:
-                sq_md = float(j.get("SQ/MD", 0))
-                if sq_md > 0: tier_sq_md_vals.append(sq_md)
-            except (ValueError, TypeError): pass
+            # Filter out exclusions for math (but not for display in editor)
+            included_jobs = [j for j in exclusive_jobs if j.get("Job#") not in st.session_state["excluded_jobs"]]
             
-            try:
-                c_sq = float(j.get("$/SQ Ind", 0))
-                if c_sq > 0: tier_cost_sq_vals.append(c_sq)
-            except (ValueError, TypeError): pass
+            tier_sq_md_vals = []
+            tier_cost_sq_vals = []
+            for j in included_jobs:
+                try:
+                    sq_md = float(j.get("SQ/MD", 0))
+                    if sq_md > 0: tier_sq_md_vals.append(sq_md)
+                except: pass
+                try:
+                    c_sq = float(j.get("$/SQ Ind", 0))
+                    if c_sq > 0: tier_cost_sq_vals.append(c_sq)
+                except: pass
+                
+            tier_med_sq_md = f"{np.median(tier_sq_md_vals):.2f}" if tier_sq_md_vals else "N/A"
+            tier_med_cost_sq = f"${np.median(tier_cost_sq_vals):,.2f}" if tier_cost_sq_vals else "N/A"
             
-        tier_med_sq_md = f"{np.median(tier_sq_md_vals):.2f}" if tier_sq_md_vals else "N/A"
-        tier_med_cost_sq = f"${np.median(tier_cost_sq_vals):,.2f}" if tier_cost_sq_vals else "N/A"
-        
-        col1, col2, col3 = st.columns([2, 1, 1])
-        with col1:
-            st.markdown(f"### {tier_labels.get(t_level, f'Tier {t_level}')} Matches ({len(exclusive_jobs)} jobs)")
-        with col2:
-            st.metric("Tier Median $/SQ", tier_med_cost_sq)
-        with col3:
-            st.metric("Tier Median SQ/MD", tier_med_sq_md)
-        
-        comp_cols = ["Job#", "Address", "City", "Spec Code", "Total Squares", "Estimator MD", "SQ/MD", 
-                       "Type G Total", "Scaffold Excluded", "Total Labor", "Type M Total", "Special Items Excluded", 
-                       "Original Historical Direct Cost", "Clean Benchmark Direct Cost", "Clean Benchmark Direct Cost/SQ",
-                       "Total Cost (Independent)", "$/SQ Ind"]
-                       
-        if exclusive_jobs:
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                st.markdown(f"### {tier_labels.get(t_level, f'Tier {t_level}')} Matches ({len(exclusive_jobs)} jobs)")
+            with col2:
+                st.metric("Tier Median $/SQ (Excluding ❌)", tier_med_cost_sq)
+            with col3:
+                st.metric("Tier Median SQ/MD (Excluding ❌)", tier_med_sq_md)
+            
+            # Prepare data editor dataframe
             comp_df = pd.DataFrame(exclusive_jobs)
+            
+            # Inject interactive boolean columns
+            comp_df.insert(0, "❌ Exclude", comp_df["Job#"].isin(st.session_state["excluded_jobs"]))
+            comp_df.insert(1, "📄 View Recap", False)
+            
+            comp_cols = ["❌ Exclude", "📄 View Recap", "Job#", "Address", "City", "Spec Code", "Total Squares", "Estimator MD", "SQ/MD", 
+                           "Type G Total", "Scaffold Excluded", "Total Labor", "Type M Total", "Special Items Excluded", 
+                           "Original Historical Direct Cost", "Clean Benchmark Direct Cost", "Clean Benchmark Direct Cost/SQ",
+                           "Total Cost (Independent)", "$/SQ Ind"]
+                           
             existing_cols = [c for c in comp_cols if c in comp_df.columns]
             df_comp_display = comp_df[existing_cols].copy()
-        else:
-            df_comp_display = pd.DataFrame(columns=comp_cols)
+                
+            # Default sort by Total Squares ascending
+            if "Total Squares" in df_comp_display.columns:
+                df_comp_display = df_comp_display.sort_values(by="Total Squares", ascending=True)
+                
+            df_comp_display.rename(columns={
+                "Total Cost (Independent)": "Total Cost",
+                "$/SQ Ind": "$/SQ"
+            }, inplace=True)
             
-
-        # Populate Aerial View 🛰️ link column
-        df_comp_display["Aerial View 🛰️"] = df_comp_display.apply(
-            lambda r: make_google_maps_link(
-                r.get("Address") if "Address" in r.index else None,
-                r.get("City") if "City" in r.index else None
-            ),
-            axis=1
-        )
-        
-        # Reorder columns to place "Aerial View 🛰️" right after "City" or "Address"
-        cols = list(df_comp_display.columns)
-        if "Aerial View 🛰️" in cols:
-            cols.remove("Aerial View 🛰️")
-            insert_idx = cols.index("City") + 1 if "City" in cols else (cols.index("Address") + 1 if "Address" in cols else 1)
-            cols.insert(insert_idx, "Aerial View 🛰️")
-            df_comp_display = df_comp_display[cols]
+            def style_excluded_row(row):
+                if row["❌ Exclude"]:
+                    # Streamlit's data editor only reliably supports background-color and color
+                    return ['background-color: #fee2e2; color: #ef4444'] * len(row)
+                return [''] * len(row)
+                
+            styled_df = df_comp_display.style.apply(style_excluded_row, axis=1)
+                
+            if print_mode:
+                print_df = styled_df.data.drop(columns=["❌ Exclude", "📄 View Recap"], errors='ignore')
+                st.table(print_df)
+                edited_df = df_comp_display
+            else:
+                edited_df = st.data_editor(
+                    styled_df,
+                    hide_index=True,
+                    use_container_width=True,
+                    key=f"tier_editor_{t_level}",
+                    disabled=[c for c in df_comp_display.columns if c not in ["❌ Exclude", "📄 View Recap"]],
+                    column_config={
+                        "Total Squares": st.column_config.NumberColumn("Total Squares", format="%,.2f"),
+                        "Estimator MD": st.column_config.NumberColumn("Estimator MD", format="%,.2f"),
+                        "SQ/MD": st.column_config.NumberColumn("SQ/MD", format="%,.2f"),
+                        "Type G Total": st.column_config.NumberColumn("Type G Total", format="$%,.2f"),
+                        "Total Labor": st.column_config.NumberColumn("Total Labor", format="$%,.2f"),
+                        "Type M Total": st.column_config.NumberColumn("Type M Total", format="$%,.2f"),
+                        "Total Cost": st.column_config.NumberColumn("Total Cost", format="$%,.2f"),
+                        "$/SQ": st.column_config.NumberColumn("$/SQ", format="$%,.2f")
+                    }
+                )
             
-        # Default sort by Total Squares ascending
-        if "Total Squares" in df_comp_display.columns:
-            df_comp_display = df_comp_display.sort_values(by="Total Squares", ascending=True)
+            # Handle Edits (Extract boolean state)
+            new_exclusions = edited_df[edited_df["❌ Exclude"] == True]["Job#"].tolist()
+            view_recaps = edited_df[edited_df["📄 View Recap"] == True]["Job#"].tolist()
             
-        df_comp_display.rename(columns={
-            "Total Cost (Independent)": "Total Cost",
-            "$/SQ Ind": "$/SQ"
-        }, inplace=True)
+            # Check if exclusions changed
+            old_exclusions_for_tier = df_comp_display[df_comp_display["❌ Exclude"] == True]["Job#"].tolist()
+            if set(new_exclusions) != set(old_exclusions_for_tier):
+                # Update global exclusions
+                st.session_state["excluded_jobs"] = [j for j in st.session_state["excluded_jobs"] if j not in df_comp_display["Job#"].values] + new_exclusions
+                st.rerun()
+                
+            # Handle View Recap
+            if view_recaps:
+                for job_no in view_recaps:
+                    orig_job = next((j for j in exclusive_jobs if j.get("Job#") == job_no), None)
+                    if orig_job and t_level == 1:
+                        # --- Tier 1: Cost Code Breakdown ---
+                        job_sq = pd.to_numeric(orig_job.get("Total Squares"), errors='coerce')
+                        job_sq = float(job_sq) if not pd.isna(job_sq) else 0.0
+                        job_md = pd.to_numeric(orig_job.get("Estimator MD"), errors='coerce')
+                        job_md = float(job_md) if not pd.isna(job_md) else 0.0
+
+                        breakdown_rows = []
+                        pred_g_total = 0.0
+                        pred_m_total = 0.0
+
+                        # Type G rows
+                        for col in COST_BREAKDOWN_TYPE_G_COLS:
+                            if col in COST_BREAKDOWN_EXCLUSIONS:
+                                continue
+                            raw_val = pd.to_numeric(orig_job.get(col), errors='coerce')
+                            raw_val = float(raw_val) if not pd.isna(raw_val) else 0.0
+                            if raw_val <= 0.0:
+                                continue
+                            display_name = DISPLAY_NAME_MAP.get(col, col)
+                            per_sq = raw_val / job_sq if job_sq > 0 else 0.0
+                            med_sq = get_rate_median(col)
+                            delta_pct = ((per_sq - med_sq) / med_sq) * 100.0 if med_sq > 0 else 0.0
+                            predicted = per_sq * sample_squares
+                            pred_g_total += predicted
+                            breakdown_rows.append({"Category": display_name, "Type": "G", "Median $/SQ": med_sq, "Delta vs Median": delta_pct, "$/SQ (This Job)": per_sq, "Predicted Cost": predicted})
+
+                        # Normalized Labor row (Type L)
+                        norm_labor = job_md * labor_rate
+                        labor_per_sq = norm_labor / job_sq if job_sq > 0 else 0.0
+                        med_labor = est_labor_cost / (sample_squares or 1)
+                        delta_labor_pct = ((labor_per_sq - med_labor) / med_labor) * 100.0 if med_labor > 0 else 0.0
+                        pred_labor_total = labor_per_sq * sample_squares
+                        breakdown_rows.append({"Category": "02-0110 - Labor - Roofing (Normalized)", "Type": "L", "Median $/SQ": med_labor, "Delta vs Median": delta_labor_pct, "$/SQ (This Job)": labor_per_sq, "Predicted Cost": pred_labor_total})
+
+                        # Type M rows
+                        for col in COST_BREAKDOWN_TYPE_M_COLS:
+                            if col in COST_BREAKDOWN_EXCLUSIONS:
+                                continue
+                            raw_val = pd.to_numeric(orig_job.get(col), errors='coerce')
+                            raw_val = float(raw_val) if not pd.isna(raw_val) else 0.0
+                            if raw_val <= 0.0:
+                                continue
+                            display_name = DISPLAY_NAME_MAP.get(col, col)
+                            per_sq = raw_val / job_sq if job_sq > 0 else 0.0
+                            med_sq = get_rate_median(col)
+                            delta_pct = ((per_sq - med_sq) / med_sq) * 100.0 if med_sq > 0 else 0.0
+                            predicted = per_sq * sample_squares
+                            pred_m_total += predicted
+                            breakdown_rows.append({"Category": display_name, "Type": "M", "Median $/SQ": med_sq, "Delta vs Median": delta_pct, "$/SQ (This Job)": per_sq, "Predicted Cost": predicted})
+
+                        if breakdown_rows:
+                            df_breakdown = pd.DataFrame(breakdown_rows)
+                            st.markdown(f"##### 📋 Cost Breakdown — Job {job_no} (Predicted for {sample_squares:,.2f} SQ)")
+                            
+                            def color_delta_pct(val):
+                                if val > 0.01: return 'color: red'
+                                elif val < -0.01: return 'color: green'
+                                return ''
+                                
+                            styled_df = df_breakdown[["Category", "Median $/SQ", "Delta vs Median", "$/SQ (This Job)", "Predicted Cost"]].style.map(color_delta_pct, subset=["Delta vs Median"])
+                            
+                            if print_mode:
+                                st.table(styled_df)
+                            else:
+                                st.dataframe(
+                                    styled_df,
+                                    hide_index=True,
+                                    use_container_width=True,
+                                    column_config={
+                                        "Category": st.column_config.TextColumn("Category", width="medium"),
+                                        "Median $/SQ": st.column_config.NumberColumn("Median $/SQ", format="$%,.2f"),
+                                        "Delta vs Median": st.column_config.NumberColumn("Delta vs Median", format="%+.1f%%"),
+                                        "$/SQ (This Job)": st.column_config.NumberColumn("$/SQ (This Job)", format="$%,.2f"),
+                                        "Predicted Cost": st.column_config.NumberColumn("Predicted Cost", format="$%,.2f"),
+                                    }
+                                )
+                            # Summary metrics
+                            pred_total = pred_g_total + pred_m_total + pred_labor_total
+                            sc1, sc2, sc3, sc4 = st.columns(4)
+                            sc1.metric("Predicted Type G", f"${pred_g_total:,.2f}")
+                            sc2.metric("Predicted Type L", f"${pred_labor_total:,.2f}")
+                            sc3.metric("Predicted Type M", f"${pred_m_total:,.2f}")
+                            sc4.metric("Total Predicted Cost", f"${pred_total:,.2f}")
+
+                    elif orig_job and t_level > 1:
+                        # --- Tier 2/3: Filter Mismatch Detail ---
+                        st.info(f"**Job {job_no} Mismatches:**")
+                        mismatch_bullets = []
+                        for k, v_list in filters.items():
+                            if not job_matches_filter(orig_job, k, v_list):
+                                expected = ", ".join([str(v) for v in v_list])
+                                actual = orig_job.get(k, 'N/A')
+                                mismatch_bullets.append(f"* **{k}:** Filter expected [{expected}], Job has [{actual}]")
+                        if mismatch_bullets:
+                            st.markdown("\n".join(mismatch_bullets))
+
+            # Build print table
+            df_print = df_comp_display.copy()
+            df_print = df_print.drop(columns=["❌ Exclude", "📄 View Recap"])
             
-        event = st.dataframe(
-            df_comp_display,
-            hide_index=True,
-            use_container_width=True,
-            selection_mode="single-row",
-            on_select="rerun",
-            key=f"tier_table_{t_level}",
-            column_config={
-                "Aerial View 🛰️": st.column_config.LinkColumn(
-                    "Aerial View 🛰️",
-                    help="Click to view satellite map",
-                    display_text="View Map 🗺️"
-                ),
-                "Total Squares": st.column_config.NumberColumn("Total Squares", format="%,.2f"),
-                "Estimator MD": st.column_config.NumberColumn("Estimator MD", format="%,.2f"),
-                "SQ/MD": st.column_config.NumberColumn("SQ/MD", format="%,.2f"),
-                "Type G Total": st.column_config.NumberColumn("Type G Total", format="$%,.2f"),
-                "Scaffold Excluded": st.column_config.NumberColumn("Scaffold Excluded", format="$%,.2f"),
-                "Total Labor": st.column_config.NumberColumn("Total Labor", format="$%,.2f"),
-                "Type M Total": st.column_config.NumberColumn("Type M Total", format="$%,.2f"),
-                "Special Items Excluded": st.column_config.NumberColumn("Special Items Excluded", format="$%,.2f"),
-                "Original Historical Direct Cost": st.column_config.NumberColumn("Original Historical Direct Cost", format="$%,.2f"),
-                "Clean Benchmark Direct Cost": st.column_config.NumberColumn("Clean Benchmark Direct Cost", format="$%,.2f"),
-                "Clean Benchmark Direct Cost/SQ": st.column_config.NumberColumn("Clean Benchmark Direct Cost/SQ", format="$%,.2f"),
-                "Total Cost": st.column_config.NumberColumn("Total Cost", format="$%,.2f"),
-                "$/SQ": st.column_config.NumberColumn("$/SQ", format="$%,.2f")
-            }
-        )
+            def format_print_val(col_name, val):
+                if pd.isna(val) or val is None: return ""
+                val_str = str(val).strip()
+                if val_str.lower() in ["nan", "none", "n/a", ""]: return ""
+                try:
+                    float_val = float(val)
+                    if col_name in ["Total Squares", "Estimator MD", "SQ/MD"]: return f"{float_val:,.2f}"
+                    elif col_name in ["Type G Total", "Scaffold Excluded", "Total Labor", "Type M Total", "Special Items Excluded", "Original Historical Direct Cost", "Clean Benchmark Direct Cost", "Clean Benchmark Direct Cost/SQ", "Total Cost", "$/SQ"]: return f"${float_val:,.2f}"
+                except: pass
+                return val_str
 
-        if event and len(event.selection.rows) > 0:
-            selected_idx = event.selection.rows[0]
-            selected_job_row = df_comp_display.iloc[selected_idx]
-            job_no = selected_job_row.get("Job#")
-            orig_job = next((j for j in exclusive_jobs if j.get("Job#") == job_no), None)
+            html_rows = []
+            for _, row in df_print.iterrows():
+                row_html = "<tr>"
+                for col in df_print.columns:
+                    val_str = format_print_val(col, row[col])
+                    align = "left" if col in ["Job#", "Address", "City", "Spec Type"] else "right"
+                    row_html += f'<td style="text-align: {align}; padding: 3px 5px; border-bottom: 1px solid #cbd5e1; white-space: nowrap;">{val_str}</td>'
+                row_html += "</tr>"
+                html_rows.append(row_html)
 
-            if orig_job and t_level == 1:
-                # --- Tier 1: Cost Code Breakdown ---
-                job_sq = pd.to_numeric(orig_job.get("Total Squares"), errors='coerce')
-                job_sq = float(job_sq) if not pd.isna(job_sq) else 0.0
-                job_md = pd.to_numeric(orig_job.get("Estimator MD"), errors='coerce')
-                job_md = float(job_md) if not pd.isna(job_md) else 0.0
+            headers_html = "".join([f'<th style="text-align: {"left" if col in ["Job#", "Address", "City", "Spec Type"] else "right"}; padding: 4px 5px; border-bottom: 2px solid #64748b; font-weight: 700; white-space: nowrap;">{col}</th>' for col in df_print.columns])
 
-                breakdown_rows = []
-                pred_g_total = 0.0
-                pred_m_total = 0.0
-
-                # Type G rows
-                for col in COST_BREAKDOWN_TYPE_G_COLS:
-                    if col in COST_BREAKDOWN_EXCLUSIONS:
-                        continue
-                    raw_val = pd.to_numeric(orig_job.get(col), errors='coerce')
-                    raw_val = float(raw_val) if not pd.isna(raw_val) else 0.0
-                    if raw_val <= 0.0:
-                        continue
-                    display_name = DISPLAY_NAME_MAP.get(col, col)
-                    per_sq = raw_val / job_sq if job_sq > 0 else 0.0
-                    predicted = per_sq * sample_squares
-                    pred_g_total += predicted
-                    breakdown_rows.append({"Category": display_name, "Type": "G", "$/SQ": per_sq, "Predicted Cost": predicted})
-
-                # Type M rows
-                for col in COST_BREAKDOWN_TYPE_M_COLS:
-                    if col in COST_BREAKDOWN_EXCLUSIONS:
-                        continue
-                    raw_val = pd.to_numeric(orig_job.get(col), errors='coerce')
-                    raw_val = float(raw_val) if not pd.isna(raw_val) else 0.0
-                    if raw_val <= 0.0:
-                        continue
-                    display_name = DISPLAY_NAME_MAP.get(col, col)
-                    per_sq = raw_val / job_sq if job_sq > 0 else 0.0
-                    predicted = per_sq * sample_squares
-                    pred_m_total += predicted
-                    breakdown_rows.append({"Category": display_name, "Type": "M", "$/SQ": per_sq, "Predicted Cost": predicted})
-
-                # Normalized Labor row
-                norm_labor = job_md * labor_rate
-                labor_per_sq = norm_labor / job_sq if job_sq > 0 else 0.0
-                pred_labor_total = labor_per_sq * sample_squares
-                breakdown_rows.append({"Category": "02-0110 - Labor - Roofing (Normalized)", "Type": "L", "$/SQ": labor_per_sq, "Predicted Cost": pred_labor_total})
-
-                if breakdown_rows:
-                    df_breakdown = pd.DataFrame(breakdown_rows)
-                    st.markdown(f"##### 📋 Cost Breakdown — Job {job_no} (Predicted for {sample_squares:,.2f} SQ)")
-                    st.dataframe(
-                        df_breakdown[["Category", "$/SQ", "Predicted Cost"]],
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config={
-                            "Category": st.column_config.TextColumn("Category", width="large"),
-                            "$/SQ": st.column_config.NumberColumn("$/SQ", format="$%,.2f"),
-                            "Predicted Cost": st.column_config.NumberColumn("Predicted Cost", format="$%,.2f"),
-                        }
-                    )
-                    # Summary metrics
-                    pred_total = pred_g_total + pred_m_total + pred_labor_total
-                    sc1, sc2, sc3, sc4 = st.columns(4)
-                    sc1.metric("Predicted Type G", f"${pred_g_total:,.2f}")
-                    sc2.metric("Predicted Type M", f"${pred_m_total:,.2f}")
-                    sc3.metric("Predicted Labor", f"${pred_labor_total:,.2f}")
-                    sc4.metric("Total Predicted Cost", f"${pred_total:,.2f}")
-
-            elif orig_job and t_level > 1:
-                # --- Tier 2/3: Filter Mismatch Detail ---
-                st.info(f"**Job {job_no} Mismatches:**")
-                mismatch_bullets = []
-                for k, v_list in filters.items():
-                    if not job_matches_filter(orig_job, k, v_list):
-                        expected = ", ".join([str(v) for v in v_list])
-                        actual = orig_job.get(k, 'N/A')
-                        mismatch_bullets.append(f"* **{k}:** Filter expected [{expected}], Job has [{actual}]")
-                if mismatch_bullets:
-                    st.markdown("\n".join(mismatch_bullets))
-
-        # Build clean print-only HTML table
-        df_print = df_comp_display.copy()
-        if "Aerial View 🛰️" in df_print.columns:
-            df_print = df_print.drop(columns=["Aerial View 🛰️"])
-            
-        def format_print_val(col_name, val):
-            if pd.isna(val) or val is None:
-                return ""
-            val_str = str(val).strip()
-            if val_str.lower() in ["nan", "none", "n/a", ""]:
-                return ""
-            try:
-                float_val = float(val)
-                if col_name in ["Total Squares", "Estimator MD", "SQ/MD"]:
-                    return f"{float_val:,.2f}"
-                elif col_name in ["Type G Total", "Scaffold Excluded", "Total Labor", "Type M Total", "Special Items Excluded", "Original Historical Direct Cost", "Clean Benchmark Direct Cost", "Clean Benchmark Direct Cost/SQ", "Total Cost", "$/SQ"]:
-                    return f"${float_val:,.2f}"
-            except (ValueError, TypeError):
-                pass
-            return val_str
-
-        html_rows = []
-        for _, row in df_print.iterrows():
-            row_html = "<tr>"
-            for col in df_print.columns:
-                val_str = format_print_val(col, row[col])
-                align = "left" if col in ["Job#", "Address", "City", "Spec Type"] else "right"
-                row_html += f'<td style="text-align: {align}; padding: 3px 5px; border-bottom: 1px solid #cbd5e1; white-space: nowrap;">{val_str}</td>'
-            row_html += "</tr>"
-            html_rows.append(row_html)
-
-        headers_html = "".join([f'<th style="text-align: {"left" if col in ["Job#", "Address", "City", "Spec Type"] else "right"}; padding: 4px 5px; border-bottom: 2px solid #64748b; font-weight: 700; white-space: nowrap;">{col}</th>' for col in df_print.columns])
-
-        print_table_html = f"""<div class="print-only" style="width: 100%; font-family: 'Inter', -apple-system, sans-serif; font-size: 8pt; color: #1e293b; margin-top: 20px;">
-<div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #cbd5e1; margin-bottom: 5px; padding-bottom: 5px;">
-    <h4 style="margin: 0; color: #334155; font-size: 14px;">{tier_labels.get(t_level, f'Tier {t_level}')} Matches ({len(exclusive_jobs)} jobs)</h4>
-    <div style="display: flex; gap: 20px; font-size: 12px; font-weight: 600; color: #475569;">
-        <span>Median $/SQ: {tier_med_cost_sq}</span>
-        <span>Median SQ/MD: {tier_med_sq_md}</span>
+            print_table_html = f'''<div class="print-only" style="width: 100%; font-family: 'Inter', -apple-system, sans-serif; font-size: 8pt; color: #1e293b; margin-top: 20px;">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #cbd5e1; margin-bottom: 5px; padding-bottom: 5px;">
+        <h4 style="margin: 0; color: #334155; font-size: 14px;">{tier_labels.get(t_level, f'Tier {t_level}')} Matches ({len(exclusive_jobs)} jobs)</h4>
+        <div style="display: flex; gap: 20px; font-size: 12px; font-weight: 600; color: #475569;">
+            <span>Median $/SQ: {tier_med_cost_sq}</span>
+            <span>Median SQ/MD: {tier_med_sq_md}</span>
+        </div>
     </div>
-</div>
-<table style="width: 100%; border-collapse: collapse;">
-<thead>
-<tr style="background-color: #f8fafc; border-top: 1px solid #cbd5e1;">{headers_html}</tr>
-</thead>
-<tbody>
-{"".join(html_rows)}
-</tbody>
-</table>
-</div>"""
-        all_html_tables.append(print_table_html)
-            
-    if all_html_tables:
-        st.markdown("".join(all_html_tables), unsafe_allow_html=True)
+    <table style="width: 100%; border-collapse: collapse;">
+    <thead>
+    <tr style="background-color: #f8fafc; border-top: 1px solid #cbd5e1;">{headers_html}</tr>
+    </thead>
+    <tbody>
+    {"".join(html_rows)}
+    </tbody>
+    </table>
+    </div>'''
+            all_html_tables.append(print_table_html)
+                
+        if all_html_tables:
+            st.markdown("".join(all_html_tables), unsafe_allow_html=True)
 
 # Export Functionality
 st.markdown('<div class="print-page-break"></div>', unsafe_allow_html=True)
@@ -2093,124 +2277,39 @@ st.markdown("---")
 if mats_suppressed:
     st.info("Shingle-related material categories were hidden from this recap because the active roof material filter is TPO. Source job totals were not modified.")
 
-st.subheader("Expected Cost Recap")
-st.markdown("### Sample Recap")
-if not df_recap.empty and tier_used != "Tier 4 (Global Fallback)":
-    df_recap_display = df_recap.copy()
-    styled_df = df_recap_display.style.hide(axis="index")\
-        .format({"Median Rate": "${:,.2f}", "Expected Total": "${:,.2f}"})\
-        .set_properties(**{'text-align': 'right'}, subset=['Median Rate', 'Expected Total'])\
-        .set_properties(**{'font-weight': 'bold'}, subset=['Expected Total'])\
-        .set_table_styles([
-            {'selector': 'th', 'props': [('text-align', 'left')]},
-            {'selector': 'td', 'props': [('padding', '8px')]}
-        ])
-    st.table(styled_df)
-
-def to_excel():
-    export_jobs = []
-    
-    tier_labels = {
-        1: "Tier 1 (Strict)",
-        2: "Tier 2 (Core Drivers)",
-        3: "Tier 3 (Broad Labor)",
-        4: "Tier 4 (Global Fallback)"
-    }
-    
-    seen_job_nos = set()
-    for t_level in range(1, active_tier_level + 1):
-        tier_key = f"t{t_level}"
-        raw_tier_jobs = tier_jobs_dict.get(tier_key, [])
-        for j in raw_tier_jobs:
-            jno = j.get("Job#")
-            if jno and jno not in seen_job_nos:
-                seen_job_nos.add(jno)
-                export_jobs.append({
-                    "Tier Match": tier_labels.get(t_level, f"Tier {t_level}"),
-                    "Job#": j.get("Job#", ""),
-                    "Address": j.get("Address", ""),
-                    "Total Squares": j.get("Total Squares", 0),
-                    "Type G Total": j.get("Type G Total", 0),
-                    "Total Labor": j.get("Total Labor", 0),
-                    "Type M Total": j.get("Type M Total", 0),
-                    "Original Historical Direct Cost": j.get("Original Historical Direct Cost", 0),
-                    "Scaffold Excluded": j.get("Scaffold", 0),
-                    "Special Items Excluded": j.get("03-0120 Special (Skylights/Hatches)", 0),
-                    "Clean Benchmark Direct Cost": j.get("Clean Benchmark Direct Cost", 0),
-                    "Clean Benchmark Direct Cost/SQ": j.get("Clean Benchmark Direct Cost/SQ", 0),
-                    "Total Cost": j.get("Total Cost (Independent)", 0),
-                    "$/SQ": j.get("$/SQ Ind", 0)
-                })
+with smart_expander("Detailed Expected Cost Recap", expanded=False):
+    st.subheader("Expected Cost Recap")
+    st.markdown("*(Minor costs under 0.5% or $250 have been consolidated into Miscellaneous rows)*")
+    if not df_recap.empty and tier_used != "Tier 4 (Global Fallback)":
         
-    df_export_jobs = pd.DataFrame(export_jobs)
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-        df_recap.to_excel(writer, sheet_name="Recap", index=False)
-        df_export_jobs.to_excel(writer, sheet_name="Comparable Jobs", index=False)
-        ws_recap = writer.sheets["Recap"]
-        ws_recap.append([])
-        ws_recap.append(["Note: Permit, Disposal, and Fuel estimators are independent allowance tools and do not affect Clean Benchmark Direct Cost."])
+        categories_map = {
+            "Other / General": "Type G (General)",
+            "Labor": "Labor",
+            "Material": "Type M (Materials)"
+        }
         
-        ws_recap.append([])
-        ws_recap.append(["Permit Cost Estimator"])
-        if permit_export_data.get("Active"):
-            ws_recap.append(["City Filter", permit_export_data["City"]])
-            ws_recap.append(["Data Points Used", permit_export_data["Count"]])
-            ws_recap.append(["Median Permit $/SQ", f"${permit_export_data['Median $/SQ']:,.2f}"])
-            ws_recap.append(["Low Permit Estimate (Square-Based)", f"${permit_export_data['Low']:,.2f}"])
-            ws_recap.append(["Median Permit Estimate (Square-Based)", f"${permit_export_data['Median']:,.2f}"])
-            ws_recap.append(["High Permit Estimate (Square-Based)", f"${permit_export_data['High']:,.2f}"])
-            if "Contract_Median" in permit_export_data:
-                ws_recap.append(["Median Permit % of Contract", f"{permit_export_data['Contract_Pct_Med']:.3f}%"])
-                ws_recap.append(["Low Permit Estimate (Contract-Based)", f"${permit_export_data['Contract_Low']:,.2f}"])
-                ws_recap.append(["Median Permit Estimate (Contract-Based)", f"${permit_export_data['Contract_Median']:,.2f}"])
-                ws_recap.append(["High Permit Estimate (Contract-Based)", f"${permit_export_data['Contract_High']:,.2f}"])
-            else:
-                ws_recap.append(["Contract-Based Estimate", "Insufficient contract-value data"])
-        else:
-            ws_recap.append(["Status", permit_export_data.get("Msg", "Inactive")])
+        for cat_key, cat_title in categories_map.items():
+            cat_df = df_recap[df_recap["Category"] == cat_key]
+            if cat_df.empty: continue
             
-        ws_recap.append([])
-        ws_recap.append(["Disposal Cost Estimator"])
-        if disposal_export_data.get("Active"):
-            ws_recap.append(["City Filter", disposal_export_data["City"]])
-            ws_recap.append(["Data Points Used", disposal_export_data["Count"]])
-            ws_recap.append(["Median Disposal $/SQ", f"${disposal_export_data['Median $/SQ']:,.2f}"])
-            ws_recap.append(["Low Disposal Estimate", f"${disposal_export_data['Low']:,.2f}"])
-            ws_recap.append(["Median Disposal Estimate", f"${disposal_export_data['Median']:,.2f}"])
-            ws_recap.append(["High Disposal Estimate", f"${disposal_export_data['High']:,.2f}"])
-        else:
-            ws_recap.append(["Status", disposal_export_data.get("Msg", "Inactive")])
+            st.markdown(f"#### {cat_title}")
             
-        ws_recap.append([])
-        ws_recap.append(["Fuel Cost Estimator"])
-        if fuel_export_data.get("Active"):
-            ws_recap.append(["City Filter", fuel_export_data["City"]])
-            ws_recap.append(["Data Points Used", fuel_export_data["Count"]])
-            ws_recap.append(["Median Fuel $/MD", f"${fuel_export_data['Median $/MD']:,.2f}"])
-            ws_recap.append(["Low Fuel Estimate", f"${fuel_export_data['Low']:,.2f}"])
-            ws_recap.append(["Median Fuel Estimate", f"${fuel_export_data['Median']:,.2f}"])
-            ws_recap.append(["High Fuel Estimate", f"${fuel_export_data['High']:,.2f}"])
-            if "Zone" in fuel_export_data:
-                ws_recap.append(["Secondary Zone Reference", fuel_export_data["Zone"]])
-                ws_recap.append(["Zone Median $/MD", f"${fuel_export_data['Zone_Med']:,.2f}"])
-        else:
-            ws_recap.append(["Status", fuel_export_data.get("Msg", "Inactive")])
-            if "Zone" in fuel_export_data:
-                ws_recap.append(["Zone Fallback Used", fuel_export_data["Zone"]])
-                ws_recap.append(["Zone Median $/MD", f"${fuel_export_data['Zone_Med']:,.2f}"])
+            # Remove Category and Type columns for cleaner display since we are grouped by Category
+            display_cols = ["Cost Code", "Description", "Median Rate", "Expected Total"]
+            cat_display_df = cat_df[display_cols].copy()
+            
+            styled_df = cat_display_df.style.hide(axis="index")\
+                .format({"Median Rate": "${:,.2f}", "Expected Total": "${:,.2f}"})\
+                .set_properties(**{'text-align': 'right'}, subset=['Median Rate', 'Expected Total'])\
+                .set_properties(**{'font-weight': 'bold'}, subset=['Expected Total'])\
+                .set_table_styles([
+                    {'selector': 'th', 'props': [('text-align', 'left')]},
+                    {'selector': 'td', 'props': [('padding', '8px')]}
+                ])
+            st.table(styled_df)
+            
+            cat_subtotal = cat_display_df["Expected Total"].sum()
+            st.markdown(f"<div style='text-align: right; font-size: 1.1em; margin-top: -15px; margin-bottom: 30px;'><strong>Total {cat_title}: ${cat_subtotal:,.2f}</strong></div>", unsafe_allow_html=True)
+            
 
-        for _ in range(3):
-            ws_recap.append([])
-        ws_recap.append(["--- ESTIMATING MODEL ---"])
-        ws_recap.append(["Estimating Model Output Generated by Historical Benchmark Tool"])
-        ws_recap.append(["Note: Clean benchmark excludes Scaffold and 03-0120 Special (Skylights/Hatches)."])
-    return excel_buffer.getvalue()
-
-if st.button("Download Recap Excel"):
-    excel_data = to_excel()
-    st.download_button(label="Click here to download", data=excel_data, file_name="Estimated_Recap.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
-st.markdown("---")
-st.info("**Note:** This tool provides a historical baseline based on past performance. It is a sanity-check mechanism and does not account for unique site conditions, extreme chop/complexity, or current supply chain volatility.")
+# [Excel Download Functionality Temporarily Removed (Phase 3)]

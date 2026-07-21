@@ -5,12 +5,18 @@ import altair as alt
 from pathlib import Path
 import os
 import io
+from streamlit_option_menu import option_menu
 
 st.set_page_config(page_title="Job Simulation", layout="wide")
 
 # Global CSS
 st.markdown("""
 <style>
+/* Hide default multipage sidebar navigation */
+[data-testid="stSidebarNav"] {
+    display: none !important;
+}
+
 /* Premium Metric aesthetics */
 .premium-metric { text-align: center; background-color: #f8f9fa; padding: 1.5rem; border-radius: 8px; border: 1px solid #e0e0e0; }
 .premium-title { color: #555; margin-bottom: 0; font-size: 1.1rem; }
@@ -35,7 +41,43 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOCAL_FILE = str(PROJECT_ROOT / "data" / "Demo_Master_List.xlsx")
+LOCAL_FILE = str(PROJECT_ROOT / "data" / "dashboard" / "Master_List_NEW_DASHBOARD_COPY.xlsx")
+
+# Sidebar UI (Navigation)
+with st.sidebar:
+    selected_page = option_menu(
+        menu_title=None,
+        options=["Dashboard", "Job Simulation"],
+        icons=["bar-chart", "tools"],
+        default_index=1,
+        orientation="horizontal",
+        styles={
+            "container": {
+                "padding": "4px",
+                "background-color": "#f0f2f6",
+                "border-radius": "20px", 
+                "border": "1px solid #e0e0e0"
+            },
+            "icon": {"font-size": "14px"}, 
+            "nav-link": {
+                "font-size": "13px",
+                "text-align": "center",
+                "margin": "0px",
+                "border-radius": "20px",
+                "--hover-color": "#e2e6ea",
+                "color": "#555",
+                "white-space": "nowrap"
+            },
+            "nav-link-selected": {
+                "background-color": "#0F52BA",
+                "color": "white",
+                "font-weight": "bold"
+            },
+        }
+    )
+    
+    if selected_page == "Dashboard":
+        st.switch_page("app.py")
 
 @st.cache_data(ttl=60)
 def load_sim_data():
@@ -124,28 +166,24 @@ tot_profit = 0.0
 est_md = 0.0
 proj_sq_md = 0.0
 
-# --- STEP 1: JOB INFO ---
-with st.container(border=True):
-    st.markdown("<h2 class='step-header'>Job Info</h2>", unsafe_allow_html=True)
-    st.markdown('<div class="hide-me-print"></div>', unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    total_squares = col1.number_input("Total Squares", value=500.0, step=10.0, min_value=0.1)
-    
-    spec_type = col2.selectbox("Spec Type", get_options("Spec Type"))
-    
-    col4, col5, col6 = st.columns(3)
-    insulation = col4.selectbox("Insulation", get_options("Insulation R-Value"))
-    cb_type = col5.selectbox("Cover Board", get_options("Cover Board Type"))
-    mat_type = col6.selectbox("Roof Material", get_options("Roof Material Type"))
-
-    col10, col11, col12 = st.columns(3)
-    cb_thick = col11.selectbox("Cover Board Thickness", get_options("Cover Board Thickness"))
-    mat_thick = col12.selectbox("Roof Material Thickness", get_options("Roof Material Thickness"))
-
-    col7, col8, col9 = st.columns(3)
-    ins_att = col7.selectbox("Insulation Attachment", get_options("Insulation Attachment"))
-    cb_att = col8.selectbox("Cover Board Attachment", get_options("Cover Board Attachment"))
-    mat_att = col9.selectbox("Roof Material Attachment", get_options("Roof Material Attachment"))
+# --- STEP 1: JOB INFO (SIDEBAR) ---
+with st.sidebar:
+    st.title("Configuration")
+    with st.form("sim_form", enter_to_submit=False):
+        total_squares = st.number_input("Total Squares", value=500.0, step=10.0, min_value=0.1)
+        spec_type = st.selectbox("Spec Type", get_options("Spec Type"))
+        
+        insulation = st.selectbox("Insulation", get_options("Insulation R-Value"))
+        cb_type = st.selectbox("Cover Board", get_options("Cover Board Type"))
+        cb_thick = st.selectbox("Cover Board Thickness", get_options("Cover Board Thickness"))
+        cb_att = st.selectbox("Cover Board Attachment", get_options("Cover Board Attachment"))
+        
+        mat_type = st.selectbox("Roof Material", get_options("Roof Material Type"))
+        mat_thick = st.selectbox("Roof Material Thickness", get_options("Roof Material Thickness"))
+        mat_att = st.selectbox("Roof Material Attachment", get_options("Roof Material Attachment"))
+        ins_att = st.selectbox("Insulation Attachment", get_options("Insulation Attachment"))
+            
+        submit_btn = st.form_submit_button("Run Simulation", type="primary", use_container_width=True)
 
 # --- STEP 2: MATERIALS SIMULATION ---
 with st.container(border=True):
